@@ -7,18 +7,17 @@
 //
 
 #import "OTRCertificatePinning.h"
-#import <SAMKeychain/SAMKeychain.h>
-#import "SAMKeychainQuery.h"
-#import "GCDAsyncSocket.h"
-#import "AFSecurityPolicy.h"
-#import "XMPPStream.h"
-#import "XMPPJID.h"
+@import SAMKeychain;
+@import CocoaAsyncSocket;
+@import AFNetworking;
+@import XMPPFramework;
+
 
 #import <CommonCrypto/CommonDigest.h>
 
 #import "OTRConstants.h"
 #import "OTRLog.h"
-#import "XMPPStream.h"
+#import "OTRXMPPStream.h"
 
 
 ///////////////////////////////////////////////
@@ -68,10 +67,10 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
 
 @implementation OTRCertificatePinning
 
-- (instancetype)initWithDefaultCertificates
+- (instancetype)init
 {
     if (self = [super init]) {
-        self.securityPolicy = [AFSecurityPolicy policyWithPinningMode:AFSSLPinningModePublicKey];
+        _securityPolicy = [AFSecurityPolicy policyWithPinningMode:AFSSLPinningModePublicKey];
         self.securityPolicy.validatesDomainName = NO;
         self.securityPolicy.allowInvalidCertificates = YES;
     }
@@ -115,15 +114,8 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
     }
 }
 
-+ (instancetype)defaultCertificates
-{
-    return [[self alloc] initWithDefaultCertificates];
-}
-
-+ (void)addCertificate:(SecCertificateRef)cert withHostName:(NSString *)hostname {
-    
-    NSData * certData = [OTRCertificatePinning dataForCertificate:cert];
-    
++ (void)addCertificateData:(NSData*)certificateData withHostName:(NSString *)hostname {
+    NSData *certData = certificateData;
     if ([hostname length] && [certData length]) {
         SAMKeychainQuery * keychainQuery = [[SAMKeychainQuery alloc] init];
         keychainQuery.service = kOTRCertificateServiceName;
@@ -152,6 +144,11 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
             }
         }
     }
+}
+
++ (void)addCertificate:(SecCertificateRef)cert withHostName:(NSString *)hostname {
+    NSData * certData = [OTRCertificatePinning dataForCertificate:cert];
+    [self addCertificateData:certData withHostName:hostname];
 }
 
 + (NSArray *)storedCertificatesWithHostName:(NSString *)hostname {
@@ -198,8 +195,8 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
     return allowedCertificate;
 }
 
-+(NSString*)sha256FingerprintForCertificate:(SecCertificateRef)certificate {
-    NSData * certData = [self dataForCertificate:certificate];
++(NSString*)sha256FingerprintForCertificateData:(NSData*)certificateData {
+    NSData *certData = certificateData;
     NSUInteger bufferLength = CC_SHA256_DIGEST_LENGTH;
     unsigned char sha256Buffer[bufferLength];
     CC_SHA256(certData.bytes, (CC_LONG)certData.length, sha256Buffer);
@@ -209,6 +206,11 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
         [fingerprint appendFormat:@"%02x",sha256Buffer[i]];
     }
     return [fingerprint stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+}
+
++(NSString*)sha256FingerprintForCertificate:(SecCertificateRef)certificate {
+    NSData * certData = [self dataForCertificate:certificate];
+    return [self sha256FingerprintForCertificateData:certData];
 }
 
 + (NSDictionary *)allCertificates {
@@ -297,13 +299,26 @@ static id AFPublicKeyForCertificate(NSData *certificate) {
 
 - (void)xmppStream:(XMPPStream *)sender didReceiveTrust:(SecTrustRef)trust completionHandler:(void (^)(BOOL))completionHandler
 {
-    BOOL trusted = [self isValidPinnedTrust:trust withHostName:xmppStream.connectedHostName];
+    NSString *hostName = nil;
+    if ([sender isKindOfClass:[OTRXMPPStream class]]) {
+        OTRXMPPStream *otrStream = (OTRXMPPStream*)sender;
+        hostName = otrStream.connectedHostName;
+    } else {
+        completionHandler(NO);
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:@"XMPPStream is of wrong class! Expected OTRXMPPStream." userInfo:nil];
+    }
+    // We should have a hostName. If we don't, something is wrong.
+    NSParameterAssert(hostName.length > 0);
+    if (!hostName.length) {
+        completionHandler(NO);
+    }
+    BOOL trusted = [self isValidPinnedTrust:trust withHostName:hostName];
     if (!trusted) {
         //Delegate firing off for user to verify with status
         SecTrustResultType result;
         OSStatus status =  SecTrustEvaluate(trust, &result);
         if ([self.delegate respondsToSelector:@selector(newTrust:withHostName:systemTrustResult:)] && status == noErr) {
-            [self.delegate newTrust:trust withHostName:xmppStream.connectedHostName systemTrustResult:result];
+            [self.delegate newTrust:trust withHostName:hostName systemTrustResult:result];
         }
     }
     completionHandler(trusted);

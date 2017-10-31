@@ -8,38 +8,24 @@
 
 #import "OTRBuddy.h"
 #import "OTRAccount.h"
-#import "OTRMessage.h"
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
 #import "OTRDatabaseManager.h"
+#import "OTRBuddyCache.h"
 @import YapDatabase;
 #import "OTRImages.h"
-#import "JSQMessagesAvatarImageFactory.h"
+@import JSQMessagesViewController;
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 @import OTRKit;
-
-const struct OTRBuddyAttributes OTRBuddyAttributes = {
-	.username = @"username",
-	.displayName = @"displayName",
-	.composingMessageString = @"composingMessageString",
-	.statusMessage = @"statusMessage",
-	.chatState = @"chatState",
-	.lastSentChatState = @"lastSentChatState",
-	.status = @"status",
-    .lastMessageDate = @"lastMessageDate",
-    .avatarData = @"avatarData",
-    .encryptionStatus = @"encryptionStatus"
-};
+#import "OTRLog.h"
+#import "OTRColors.h"
+#import "NSString+ChatSecure.h"
 
 @implementation OTRBuddy
-
-- (id)init
-{
-    if (self = [super init]) {
-        self.status = OTRThreadStatusOffline;
-        self.chatState = kOTRChatStateUnknown;
-        self.lastSentChatState = kOTRChatStateUnknown;
-    }
-    return self;
-}
+@synthesize displayName = _displayName;
+@synthesize isArchived = _isArchived;
+@synthesize muteExpiration = _muteExpiration;
+@dynamic statusMessage, chatState, lastSentChatState, status;
 
 /**
  The current or generated avatar image either from avatarData or the initials from displayName or username
@@ -63,12 +49,28 @@ const struct OTRBuddyAttributes OTRBuddyAttributes = {
 
 - (void)setDisplayName:(NSString *)displayName
 {
+    // Never set displayName the same as the username
+    if ([displayName isEqualToString:self.username]) {
+        return;
+    }
     if (![_displayName isEqualToString:displayName]) {
         _displayName = displayName;
         if (!self.avatarData) {
             [OTRImages removeImageWithIdentifier:self.uniqueId];
         }
     }
+}
+
+- (NSString*) displayName {
+    // If user has set a displayName that isn't the JID, use that immediately
+    if (_displayName.length > 0 && ![_displayName isEqualToString:self.username]) {
+        return _displayName;
+    }
+    NSString *user = [self.username otr_displayName];
+    if (!user.length) {
+        return _displayName;
+    }
+    return user;
 }
 
 
@@ -80,61 +82,140 @@ const struct OTRBuddyAttributes OTRBuddyAttributes = {
     return (numberOfMessages > 0);
 }
 
-- (void)updateLastMessageDateWithTransaction:(YapDatabaseReadTransaction *)transaction
-{
-    __block NSDate *date = nil;
-    NSString *extensionName = [YapDatabaseConstants extensionName:DatabaseExtensionNameRelationshipExtensionName];
-    NSString *edgeName = [YapDatabaseConstants edgeName:RelationshipEdgeNameMessageBuddyEdgeName];
-    [[transaction ext:extensionName] enumerateEdgesWithName:edgeName destinationKey:self.uniqueId collection:[OTRBuddy collection] usingBlock:^(YapDatabaseRelationshipEdge *edge, BOOL *stop) {
-        OTRMessage *message = [OTRMessage fetchObjectWithUniqueID:edge.sourceKey transaction:transaction];
-        if (message) {
-            if (!date) {
-                date = message.date;
-            }
-            else {
-                date = [date laterDate:message.date];
-            }
-        }
-    }];
-    self.lastMessageDate = date;
-}
-
 - (OTRAccount*)accountWithTransaction:(YapDatabaseReadTransaction *)transaction
 {
     return [OTRAccount fetchObjectWithUniqueID:self.accountUniqueId transaction:transaction];
 }
 
-- (void)setAllMessagesAsReadInTransaction:(YapDatabaseReadWriteTransaction *)transaction
-{
-    NSString *extensionName = [YapDatabaseConstants extensionName:DatabaseExtensionNameRelationshipExtensionName];
-    NSString *edgeName = [YapDatabaseConstants edgeName:RelationshipEdgeNameMessageBuddyEdgeName];
-    [[transaction ext:extensionName] enumerateEdgesWithName:edgeName destinationKey:self.uniqueId collection:[OTRBuddy collection] usingBlock:^(YapDatabaseRelationshipEdge *edge, BOOL *stop) {
-        id databseObject = [transaction objectForKey:edge.sourceKey inCollection:edge.sourceCollection];
-        if ([databseObject isKindOfClass:[OTRMessage class]]) {
-            OTRMessage *message = (OTRMessage *)databseObject;
-            if (!message.isRead) {
-                message.read = YES;
-                [message saveWithTransaction:transaction];
-            }
-        }        
-    }];
-}
-- (OTRMessage *)lastMessageWithTransaction:(YapDatabaseReadTransaction *)transaction
-{
-    __block OTRMessage *finalMessage = nil;
-    NSString *extensionName = [YapDatabaseConstants extensionName:DatabaseExtensionNameRelationshipExtensionName];
-    NSString *edgeName = [YapDatabaseConstants edgeName:RelationshipEdgeNameMessageBuddyEdgeName];
-    [[transaction ext:extensionName] enumerateEdgesWithName:edgeName destinationKey:self.uniqueId collection:[OTRBuddy collection] usingBlock:^(YapDatabaseRelationshipEdge *edge, BOOL *stop) {
-        OTRMessage *message = [OTRMessage fetchObjectWithUniqueID:edge.sourceKey transaction:transaction];
-        if (!finalMessage ||    [message.date compare:finalMessage.date] == NSOrderedDescending) {
-            finalMessage = message;
-        }
-        
-    }];
-    return [finalMessage copy];
++ (nullable instancetype) fetchObjectWithUniqueID:(NSString *)uniqueID transaction:(YapDatabaseReadTransaction *)transaction {
+    OTRBuddy *buddy = (OTRBuddy*)[super fetchObjectWithUniqueID:uniqueID transaction:transaction];
+    if (!buddy.username.length) {
+        return nil;
+    }
+    return buddy;
 }
 
-#pragma - makr OTRThreadOwner Methods
+- (NSUInteger)numberOfUnreadMessagesWithTransaction:(nonnull YapDatabaseReadTransaction*)transaction {
+    YapDatabaseSecondaryIndexTransaction *indexTransaction = [transaction ext:OTRMessagesSecondaryIndex];
+    if (!indexTransaction) {
+        return 0;
+    }
+    NSString *queryString = [NSString stringWithFormat:@"WHERE %@ == %@ AND %@ == ?", OTRYapDatabaseUnreadMessageSecondaryIndexColumnName, @(NO), OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName];
+    YapDatabaseQuery *query = [YapDatabaseQuery queryWithFormat:queryString, self.uniqueId];
+    NSUInteger numRows = 0;
+    BOOL success = [indexTransaction getNumberOfRows:&numRows matchingQuery:query];
+    if (!success) {
+        DDLogError(@"Query error for OTRBuddy numberOfUnreadMessagesWithTransaction");
+    }
+    return numRows;
+}
+
+- (id <OTRMessageProtocol>)lastMessageWithTransaction:(YapDatabaseReadTransaction *)transaction
+{
+    YapDatabaseViewTransaction *viewTransaction = [transaction ext:OTRFilteredChatDatabaseViewExtensionName];
+    if (!viewTransaction) {
+        return nil;
+    }
+    id <OTRMessageProtocol> message = [viewTransaction lastObjectInGroup:self.threadIdentifier];
+    if (![message conformsToProtocol:@protocol(OTRMessageProtocol)]) {
+        return nil;
+    }
+    return message;
+}
+
+/** Translates the preferredSecurity value first if set, otherwise bestTransportSecurityWithTransaction: */
+- (OTRMessageTransportSecurity)preferredTransportSecurityWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction {
+    NSParameterAssert(transaction);
+    if (!transaction) {
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:@"Missing transaction for bestTransportSecurityWithTransaction!" userInfo:nil];
+    }
+    OTRMessageTransportSecurity messageSecurity = OTRMessageTransportSecurityInvalid;
+    
+    switch (self.preferredSecurity) {
+        case OTRSessionSecurityPlaintextOnly: {
+            messageSecurity = OTRMessageTransportSecurityPlaintext;
+            break;
+        }
+        case OTRSessionSecurityPlaintextWithOTR: {
+            messageSecurity = OTRMessageTransportSecurityPlaintextWithOTR;
+            break;
+        }
+        case OTRSessionSecurityOTR: {
+            messageSecurity = OTRMessageTransportSecurityOTR;
+            break;
+        }
+        case OTRSessionSecurityOMEMOandOTR:
+        case OTRSessionSecurityOMEMO: {
+            messageSecurity = OTRMessageTransportSecurityOMEMO;
+            break;
+        }
+        case OTRSessionSecurityBestAvailable: {
+            messageSecurity = [self bestTransportSecurityWithTransaction:transaction];
+            break;
+        }
+    }
+    
+    return messageSecurity;
+}
+
+- (OTRMessageTransportSecurity)bestTransportSecurityWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction
+{
+    NSParameterAssert(transaction);
+    if (!transaction) {
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:@"Missing transaction for bestTransportSecurityWithTransaction!" userInfo:nil];
+    }
+    NSArray <OTROMEMODevice *>*devices = [OTROMEMODevice allDevicesForParentKey:self.uniqueId
+                                                                     collection:[[self class] collection]
+                                                                        transaction:transaction];
+    // If we have some omemo devices then that's the best we have.
+    if ([devices count] > 0) {
+        return OTRMessageTransportSecurityOMEMO;
+    }
+    
+    OTRAccount *account = [OTRAccount fetchObjectWithUniqueID:self.accountUniqueId transaction:transaction];
+    
+    // Check if we have fingerprints for this buddy. This is the best proxy we have for detecting if we have had an otr session in the past.
+    // If we had a session in the past then we should use that otherwise.
+    NSArray<OTRFingerprint *> *allFingerprints = [[OTRProtocolManager sharedInstance].encryptionManager.otrKit fingerprintsForUsername:self.username accountName:account.username protocol:account.protocolTypeString];
+    if ([allFingerprints count]) {
+        return OTRMessageTransportSecurityOTR;
+    } else {
+        return OTRMessageTransportSecurityPlaintextWithOTR;
+    }
+}
+
+#pragma - mark OTRUserInfoProfile Protocol
+
+- (UIColor *)avatarBorderColor
+{
+    OTRThreadStatus threadStatus = [self currentStatus];
+    if (threadStatus == OTRThreadStatusOffline) {
+        return nil;
+    }
+    return [OTRColors colorWithStatus:[self currentStatus]];
+}
+
+#pragma - mark OTRThreadOwner Methods
+
+/** New outgoing message w/ preferred message security. Unsaved! */
+- (id<OTRMessageProtocol>) outgoingMessageWithText:(NSString *)text transaction:(YapDatabaseReadTransaction *)transaction {
+    NSParameterAssert(text);
+    NSParameterAssert(transaction);
+    OTROutgoingMessage *message = [[OTROutgoingMessage alloc] init];
+    message.text = text;
+    message.buddyUniqueId = self.uniqueId;
+    OTRMessageTransportSecurity preferredSecurity = [self preferredTransportSecurityWithTransaction:transaction];
+    message.messageSecurityInfo = [[OTRMessageEncryptionInfo alloc] initWithMessageSecurity:preferredSecurity];
+    return message;
+}
+
+- (NSString*) lastMessageIdentifier {
+    return self.lastMessageId;
+}
+
+- (void) setLastMessageIdentifier:(NSString *)lastMessageIdentifier {
+    self.lastMessageId = lastMessageIdentifier;
+}
 
 - (NSString *)threadName
 {
@@ -167,10 +248,38 @@ const struct OTRBuddyAttributes OTRBuddyAttributes = {
 }
 
 - (OTRThreadStatus)currentStatus {
-    return self.status;
+    return [OTRBuddyCache.shared threadStatusForBuddy:self];
 }
 
 - (BOOL)isGroupThread {
+    return NO;
+}
+
+#pragma mark Dynamic Properties
+
+- (NSString*) statusMessage {
+    return [OTRBuddyCache.shared statusMessageForBuddy:self];
+}
+
+- (OTRChatState) chatState {
+    return [OTRBuddyCache.shared chatStateForBuddy:self];
+}
+
+- (OTRChatState) lastSentChatState {
+    return [OTRBuddyCache.shared lastSentChatStateForBuddy:self];
+}
+
+- (OTRThreadStatus) status {
+    return [OTRBuddyCache.shared threadStatusForBuddy:self];
+}
+
+- (BOOL) isMuted {
+    if (!self.muteExpiration) {
+        return NO;
+    }
+    if ([[NSDate date] compare:self.muteExpiration] == NSOrderedAscending) {
+        return YES;
+    }
     return NO;
 }
 
@@ -212,49 +321,49 @@ const struct OTRBuddyAttributes OTRBuddyAttributes = {
         // Checking buddy class is a hotfix for issue #472
         if (buddy &&
             [buddy isKindOfClass:[OTRBuddy class]] &&
-            [buddy.username isEqualToString:username]) {
+            [buddy.username.lowercaseString isEqualToString:username.lowercaseString]) {
             *stop = YES;
             finalBuddy = buddy;
         }
     }];
 
-    if (finalBuddy) {
-        finalBuddy = [finalBuddy copy];
-    }
-    
     return finalBuddy;
 }
 
-+ (void)resetAllChatStatesWithTransaction:(YapDatabaseReadWriteTransaction *)transaction
-{
-    NSMutableArray *buddiesToChange = [NSMutableArray array];
-    [transaction enumerateKeysAndObjectsInCollection:[self collection] usingBlock:^(NSString *key, OTRBuddy *buddy, BOOL *stop) {
-        if(buddy.chatState != kOTRChatStateUnknown)
-        {
-            [buddiesToChange addObject:buddy];
-        }
-    }];
-    
-    [buddiesToChange enumerateObjectsUsingBlock:^(OTRBuddy *buddy, NSUInteger idx, BOOL *stop) {
-        buddy.chatState = kOTRChatStateUnknown;
-        [buddy saveWithTransaction:transaction];
-    }];
+#pragma mark Disable Mantle Storage of Dynamic Properties
+
++ (NSSet<NSString*>*) excludedProperties {
+    static NSSet<NSString*>* excludedProperties = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        excludedProperties = [NSSet setWithArray:@[NSStringFromSelector(@selector(statusMessage)),
+                               NSStringFromSelector(@selector(chatState)),
+                               NSStringFromSelector(@selector(lastSentChatState)),
+                               NSStringFromSelector(@selector(status))]];
+    });
+    return excludedProperties;
 }
 
-+ (void)resetAllBuddyStatusesWithTransaction:(YapDatabaseReadWriteTransaction *)transaction
-{
-    NSMutableArray *buddiesToChange = [NSMutableArray array];
-    [transaction enumerateKeysAndObjectsInCollection:[self collection] usingBlock:^(NSString *key, OTRBuddy *buddy, BOOL *stop) {
-        if(buddy.status != OTRThreadStatusOffline)
-        {
-            [buddiesToChange addObject:buddy];
-        }
+// See MTLModel+NSCoding.h
+// This helps enforce that only the properties keys that we
+// desire will be encoded. Be careful to ensure that values
+// that should be stored in the keychain don't accidentally
+// get serialized!
++ (NSDictionary *)encodingBehaviorsByPropertyKey {
+    NSMutableDictionary *behaviors = [NSMutableDictionary dictionaryWithDictionary:[super encodingBehaviorsByPropertyKey]];
+    NSSet<NSString*> *excludedProperties = [self excludedProperties];
+    [excludedProperties enumerateObjectsUsingBlock:^(NSString * _Nonnull selector, BOOL * _Nonnull stop) {
+        [behaviors setObject:@(MTLModelEncodingBehaviorExcluded) forKey:selector];
     }];
-    
-    [buddiesToChange enumerateObjectsUsingBlock:^(OTRBuddy *buddy, NSUInteger idx, BOOL *stop) {
-        buddy.status = OTRThreadStatusOffline;
-        [buddy saveWithTransaction:transaction];
-    }];
+    return behaviors;
+}
+
++ (MTLPropertyStorage)storageBehaviorForPropertyWithKey:(NSString *)propertyKey {
+    NSSet<NSString*> *excludedProperties = [self excludedProperties];
+    if ([excludedProperties containsObject:propertyKey]) {
+        return MTLPropertyStorageNone;
+    }
+    return [super storageBehaviorForPropertyWithKey:propertyKey];
 }
 
 @end

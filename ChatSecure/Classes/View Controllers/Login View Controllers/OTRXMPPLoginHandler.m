@@ -8,19 +8,19 @@
 
 #import "OTRXMPPLoginHandler.h"
 #import "OTRXMPPManager.h"
-#import "XLForm.h"
+@import XLForm;
 #import "OTRXLFormCreator.h"
 #import "OTRProtocolManager.h"
 #import "OTRDatabaseManager.h"
 #import "OTRPasswordGenerator.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
-#import "XMPPJID.h"
+@import XMPPFramework;
 #import "OTRXMPPServerInfo.h"
 #import "OTRXMPPTorAccount.h"
 #import "OTRTorManager.h"
+#import "OTRLog.h"
 
 @interface OTRXMPPLoginHandler()
-@property (nonatomic, strong) NSString *password;
 @end
 
 @implementation OTRXMPPLoginHandler
@@ -49,18 +49,27 @@
         [[form formRowWithTag:kOTRXLFormPortTextFieldTag] setValue:nil];
     }
     
+    XLFormRowDescriptor *autofetch = [form formRowWithTag:kOTRXLFormAutomaticURLFetchTag];
+    autofetch.value = @(!account.disableAutomaticURLFetching);
+    
     [[form formRowWithTag:kOTRXLFormResourceTextFieldTag] setValue:account.resource];
 }
 
-- (OTRXMPPAccount *)moveValues:(XLFormDescriptor *)form intoAccount:(OTRXMPPAccount *)account
+- (OTRXMPPAccount *)moveValues:(XLFormDescriptor *)form intoAccount:(OTRXMPPAccount *)intoAccount
 {
-    if (!account) {
+    OTRXMPPAccount *account = nil;
+    if (!intoAccount) {
          BOOL useTor = [[form formRowWithTag:kOTRXLFormUseTorTag].value boolValue];
+        OTRAccountType accountType = OTRAccountTypeJabber;
         if (useTor) {
-            account = [[OTRXMPPTorAccount alloc] initWithAccountType:OTRAccountTypeXMPPTor];
-        } else {
-            account = [[OTRXMPPAccount alloc] initWithAccountType:OTRAccountTypeJabber];
+            accountType = OTRAccountTypeXMPPTor;
         }
+        account = [OTRAccount accountWithUsername:@"" accountType:accountType];
+        if (!account) {
+            return nil;
+        }
+    } else {
+        account = [intoAccount copy];
     }
     NSString *nickname = [[form formRowWithTag:kOTRXLFormNicknameTextFieldTag] value];
     
@@ -95,14 +104,11 @@
     NSString *password = [[form formRowWithTag:kOTRXLFormPasswordTextFieldTag] value];
     
     if (password && password.length > 0) {
-        self.password = password;
+        account.password = password;
     } else if (account.password.length == 0) {
         // No password in field, generate strong password for user
-        self.password = [OTRPasswordGenerator passwordWithLength:20];
-    } else {
-        self.password = account.password;
+        account.password = [OTRPasswordGenerator passwordWithLength:20];
     }
-
     
     NSNumber *autologin = [[form formRowWithTag:kOTRXLFormLoginAutomaticallySwitchTag] value];
     if (autologin) {
@@ -136,6 +142,10 @@
     if ([resource length]) {
         account.resource = resource;
     }
+    NSNumber *autofetch = [form formRowWithTag:kOTRXLFormAutomaticURLFetchTag].value;
+    if (autofetch) {
+        account.disableAutomaticURLFetching = !autofetch.boolValue;
+    }
     
     // Post-process values via XMPPJID for stringprep
     
@@ -146,7 +156,7 @@
     XMPPJID *jid = [XMPPJID jidWithUser:jidNode domain:jidDomain resource:account.resource];
     if (!jid) {
         NSParameterAssert(jid != nil);
-        NSLog(@"Error creating JID from account values!");
+        DDLogError(@"Error creating JID from account values!");
     }
     account.username = jid.bare;
     account.resource = jid.resource;
@@ -166,12 +176,12 @@
     
     // Start generating our OTR key here so it's ready when we need it
     
-    [[OTRProtocolManager sharedInstance].encryptionManager.otrKit generatePrivateKeyForAccountName:account.username protocol:kOTRProtocolTypeXMPP completion:^(NSString *fingerprint, NSError *error) {
-        NSParameterAssert(fingerprint.length > 0);
-        if (fingerprint.length) {
-            NSLog(@"Fingerprint generated for %@: %@", jid.bare, fingerprint);
+    [[OTRProtocolManager sharedInstance].encryptionManager.otrKit generatePrivateKeyForAccountName:account.username protocol:kOTRProtocolTypeXMPP completion:^(OTRFingerprint *fingerprint, NSError *error) {
+        NSParameterAssert(fingerprint.fingerprint.length > 0);
+        if (fingerprint.fingerprint.length > 0) {
+            DDLogVerbose(@"Fingerprint generated for %@: %@", jid.bare, fingerprint);
         } else {
-            NSLog(@"Error generating fingerprint for %@: %@", jid.bare, error);
+            DDLogError(@"Error generating fingerprint for %@: %@", jid.bare, error);
         }
     }];
     
@@ -224,7 +234,10 @@
 - (void) finishConnectingWithForm:(XLFormDescriptor *)form account:(OTRXMPPAccount *)account {
     [self prepareForXMPPConnectionFrom:form account:account];
     NSString *password = [[form formRowWithTag:kOTRXLFormPasswordTextFieldTag] value];
-    [self.xmppManager connectWithPassword:password userInitiated:YES];
+    if (password.length > 0) {
+        account.password = password;
+    }
+    [self.xmppManager connectUserInitiated:YES];
 }
 
 - (void)receivedNotification:(NSNotification *)notification
@@ -233,15 +246,15 @@
     NSError *error = notification.userInfo[OTRXMPPLoginErrorKey];
     OTRAccount *account = self.xmppManager.account;
 
-    if (newStatus == OTRLoginStatusAuthenticated) {        
-        // Account has been created, so save the password
-        account.password = self.password;
-        
+    if (newStatus == OTRLoginStatusAuthenticated) {
+        // Only call completion once
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
         if (self.completion) {
             self.completion(account,nil);
         }
     }
     else if (error) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self];
         if (self.completion) {
             self.completion(account,error);
         }

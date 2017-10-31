@@ -6,18 +6,26 @@
 //  Copyright (c) 2014 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
+@import Foundation;
 @import YapDatabase;
+
+NS_ASSUME_NONNULL_BEGIN
 
 
 //Extension Strings
+/** Can filter on inbox vs archive. Depends on OTRConversationDatabaseViewExtensionName */
+extern NSString *OTRFilteredConversationsName;
+/** Can filter on inbox vs archive. Depends on OTRAllBuddiesDatabaseViewExtensionName */
+extern NSString *OTRFilteredBuddiesName;
+
 extern NSString *OTRConversationDatabaseViewExtensionName;
+/** Right now only filters messages without a length */
+extern NSString *OTRFilteredChatDatabaseViewExtensionName;
 extern NSString *OTRChatDatabaseViewExtensionName;
 extern NSString *OTRAllAccountDatabaseViewExtensionName;
 extern NSString *OTRAllBuddiesDatabaseViewExtensionName;
 extern NSString *OTRAllSubscriptionRequestsViewExtensionName;
 extern NSString *OTRAllPushAccountInfoViewExtensionName;
-extern NSString *OTRUnreadMessagesViewExtensionName;
 
 // Group Strings
 extern NSString *OTRAllAccountGroup;
@@ -34,9 +42,11 @@ extern NSString *OTRPushTokenGroup;
 @interface OTRDatabaseView : NSObject
 
 
-+ (BOOL)registerConversationDatabaseView;
++ (BOOL)registerConversationDatabaseViewWithDatabase:(YapDatabase *)database;
++ (BOOL)registerFilteredConversationsViewWithDatabase:(YapDatabase *)database;
 
-+ (BOOL)registerAllAccountsDatabaseView;
+
++ (BOOL)registerAllAccountsDatabaseViewWithDatabase:(YapDatabase *)database;
 
 
 /**
@@ -44,12 +54,12 @@ extern NSString *OTRPushTokenGroup;
  by buddyUniqueID. For OTRXMPPRoomMessage they are grouped by roomUniqueID. In both cases they are
  sorted by date.
  */
-+ (BOOL)registerChatDatabaseView;
++ (BOOL)registerChatDatabaseViewWithDatabase:(YapDatabase *)database;
 
-+ (BOOL)registerAllBuddiesDatabaseView;
++ (BOOL)registerAllBuddiesDatabaseViewWithDatabase:(YapDatabase *)database;
++ (BOOL)registerFilteredBuddiesViewWithDatabase:(YapDatabase *)database;
 
-+ (BOOL)registerAllSubscriptionRequestsView;
-
-+ (BOOL)registerUnreadMessagesView;
++ (BOOL)registerAllSubscriptionRequestsViewWithDatabase:(YapDatabase *)database;
 
 @end
+NS_ASSUME_NONNULL_END

@@ -6,8 +6,8 @@
 //  Copyright (c) 2015 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
-#import "QRCodeReaderViewController.h"
+@import Foundation;
+@import QRCodeReaderViewController;
 @class OTRAccount;
 
 @interface OTRQRCodeReaderDelegate : NSObject <QRCodeReaderDelegate>

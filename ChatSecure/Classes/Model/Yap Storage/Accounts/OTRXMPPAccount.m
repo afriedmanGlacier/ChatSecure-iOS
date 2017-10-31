@@ -10,11 +10,8 @@
 #import "OTRXMPPManager.h"
 #import "OTRConstants.h"
 @import OTRAssets;
-#import "OTRLanguageManager.h"
-#import "XMPPJID.h"
-#import "XMPPStream.h"
-#import "XMPPvCardTemp.h"
-#import "NSData+XMPP.h"
+
+@import XMPPFramework;
 
 static NSUInteger const OTRDefaultPortNumber = 5222;
 
@@ -24,34 +21,19 @@ static NSUInteger const OTRDefaultPortNumber = 5222;
 @synthesize waitingForvCardTempFetch = _waitingForvCardTempFetch;
 @synthesize photoHash = _photoHash;
 
-- (id)init
-{
-    if (self = [super init]) {
-        self.port = [OTRXMPPAccount defaultPort];
-        self.resource = [OTRXMPPAccount newResource];
+- (instancetype) initWithUsername:(NSString *)username accountType:(OTRAccountType)accountType {
+    if (self = [super initWithUsername:username accountType:accountType]) {
+        _port = [[self class] defaultPort];
+        _resource = [[self class] newResource];
         self.autologin = YES;
         self.rememberPassword = YES;
     }
     return self;
 }
 
-- (OTRProtocolType)protocolType
-{
-    return OTRProtocolTypeXMPP;
-}
-
-- (NSString *)protocolTypeString
-{
-    return kOTRProtocolTypeXMPP;
-}
-
 - (UIImage *)accountImage
 {
     return [UIImage imageNamed:OTRXMPPImageName inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil];
-}
-- (NSString *)accountDisplayName
-{
-    return JABBER_STRING;
 }
 
 - (Class)protocolClass {
@@ -65,18 +47,20 @@ static NSUInteger const OTRDefaultPortNumber = 5222;
     return NSStringFromClass([OTRAccount class]);
 }
 
-+ (int)defaultPort
++ (uint16_t)defaultPort
 {
     return OTRDefaultPortNumber;
 }
 
 + (instancetype)accountForStream:(XMPPStream *)stream transaction:(YapDatabaseReadTransaction *)transaction
 {
-    id xmppAccount = nil;
-    if([stream.tag isKindOfClass:[NSString class]]) {
-        
-        xmppAccount = [self fetchObjectWithUniqueID:stream.tag transaction:transaction];
+    NSParameterAssert(stream);
+    NSParameterAssert(transaction);
+    if (!stream || !transaction) { return nil; }
+    if (![stream.tag isKindOfClass:[NSString class]]) {
+        return nil;
     }
+    OTRXMPPAccount *xmppAccount = [self fetchObjectWithUniqueID:stream.tag transaction:transaction];
     return xmppAccount;
 }
 
@@ -99,6 +83,16 @@ static NSUInteger const OTRDefaultPortNumber = 5222;
     }
 }
 
+// If forwarding JID is set, assume account is archived
+- (BOOL) isArchived {
+    if (!self.vCardTemp.jid) {
+        return NO;
+    } else if (![self.vCardTemp.jid isEqualToJID:self.bareJID options:XMPPJIDCompareBare]) {
+        return YES;
+    }
+    return NO;
+}
+
 - (void)setAvatarData:(NSData *)avatarData
 {
     [super setAvatarData:avatarData];
@@ -110,5 +104,8 @@ static NSUInteger const OTRDefaultPortNumber = 5222;
     }
 }
 
+- (nullable XMPPJID*) bareJID {
+    return [XMPPJID jidWithString:self.username];
+}
 
 @end

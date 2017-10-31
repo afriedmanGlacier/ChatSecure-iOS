@@ -7,14 +7,15 @@
 //
 
 import Foundation
+import OTRAssets
 
 public extension NSError {
-    class func XMPPXMLError(error:OTRXMPPXMLError, userInfo:[String:AnyObject]?) -> NSError {
+    @objc class func XMPPXMLError(_ error:OTRXMPPXMLError, userInfo:[String:AnyObject]?) -> NSError {
         return self.chatSecureError(error, userInfo: userInfo)
     }
     
-    class func chatSecureError(error:ChatSecureErrorProtocol, userInfo:[String:AnyObject]?) -> NSError {
-        var tempUserInfo:[String:AnyObject] = [NSLocalizedDescriptionKey:error.localizedDescription()]
+    class func chatSecureError(_ error:ChatSecureErrorProtocol, userInfo:[String:AnyObject]?) -> NSError {
+        var tempUserInfo:[String:AnyObject] = [NSLocalizedDescriptionKey:error.localizedDescription() as AnyObject]
         
         if let additionalDictionary = error.additionalUserInfo() {
             additionalDictionary.forEach { tempUserInfo.updateValue($1, forKey: $0) }
@@ -25,7 +26,7 @@ public extension NSError {
             additionalDictionary.forEach { tempUserInfo.updateValue($1, forKey: $0) }
         }
         
-        return NSError(domain: kOTRErrorDomain, code: error.code(), userInfo: userInfo)
+        return NSError(domain: kOTRErrorDomain, code: error.code(), userInfo: tempUserInfo)
     }
 }
 
@@ -35,6 +36,7 @@ public protocol ChatSecureErrorProtocol {
     func additionalUserInfo() -> [String:AnyObject]?
 }
 
+/** Error types for the Push server*/
 enum PushError: Int {
     case noPushDevice       = 301
     case invalidURL         = 302
@@ -46,7 +48,7 @@ enum PushError: Int {
     case misingExpiresDate  = 308
 }
 
-extension PushError {
+extension PushError: ChatSecureErrorProtocol {
     func localizedDescription() -> String {
         switch self {
         case .noPushDevice:
@@ -68,17 +70,52 @@ extension PushError {
         }
     }
     
-    func error() -> NSError {
-        return NSError(domain: kOTRErrorDomain, code: self.rawValue, userInfo: [NSLocalizedDescriptionKey:self.localizedDescription()])
+    func code() -> Int {
+        return self.rawValue
+    }
+    
+    func additionalUserInfo() -> [String : AnyObject]? {
+        return nil
+    }
+}
+
+/** Error types for encryption*/
+enum EncryptionError: Int {
+    case unableToCreateOTRSession = 350
+    case omemoNotSuported         = 351
+}
+
+extension EncryptionError: ChatSecureErrorProtocol {
+    func localizedDescription() -> String {
+        switch self {
+        case .unableToCreateOTRSession: return "Unable to create OTR session"
+        case .omemoNotSuported: return "OMEMO not supported"
+        }
+    }
+    
+    func code() -> Int {
+        return self.rawValue
+    }
+    
+    func additionalUserInfo() -> [String : AnyObject]? {
+        return nil
     }
 }
 
 
 @objc public enum OTRXMPPXMLError: Int {
-    case UnkownError     = 1000
-    case Conflict        = 1001
-    case NotAcceptable   = 1002
-    case PolicyViolation = 1003
+    case unknownError     = 1000
+    case conflict        = 1001
+    case notAcceptable   = 1002
+    case policyViolation = 1003
+    case serviceUnavailable = 1004
+}
+
+public enum OMEMOBundleError: Error {
+    case unknown
+    case notFound
+    case invalid
+    case keyGeneration
 }
 
 extension OTRXMPPXMLError: ChatSecureErrorProtocol {
@@ -88,16 +125,46 @@ extension OTRXMPPXMLError: ChatSecureErrorProtocol {
     
     public func localizedDescription() -> String {
         switch self {
-        case .UnkownError:
+        case .unknownError:
             return "Unknown Error"
-        case .Conflict:
+        case .conflict:
             return "There's a conflict with the username"
-        case .NotAcceptable:
+        case .notAcceptable:
             return "Not enough information provided"
-        case .PolicyViolation:
+        case .policyViolation:
             return "Server policy violation"
+        case .serviceUnavailable:
+            return MESSAGE_COULD_NOT_BE_SENT_STRING()
         }
     }
+    
+    public func additionalUserInfo() -> [String : AnyObject]? {
+        return nil
+    }
+}
+
+@objc public enum OTROMEMOError: Int {
+    case unknownError      = 1100
+    case noDevicesForBuddy = 1101
+    case noDevices         = 1102
+}
+
+extension OTROMEMOError: ChatSecureErrorProtocol {
+    public func code() -> Int {
+        return self.rawValue
+    }
+    
+    public func localizedDescription() -> String {
+        switch self {
+        case .unknownError:
+            return UNKNOWN_ERROR_STRING()
+        case .noDevicesForBuddy:
+            return NO_DEVICES_BUDDY_ERROR_STRING()
+        case .noDevices:
+            return NO_DEVICES_ACCOUNT_ERROR_STRING()
+        }
+    }
+    
     
     public func additionalUserInfo() -> [String : AnyObject]? {
         return nil

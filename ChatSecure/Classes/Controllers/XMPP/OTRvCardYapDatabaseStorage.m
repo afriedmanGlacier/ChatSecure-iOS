@@ -10,8 +10,7 @@
 #import "OTRDatabaseManager.h"
 #import "OTRXMPPBuddy.h"
 #import "OTRXMPPAccount.h"
-#import "XMPPJID.h"
-#import "XMPPvCardTemp.h"
+@import XMPPFramework;
 
 @interface OTRvCardYapDatabaseStorage ()
 
@@ -27,7 +26,7 @@
 {
     if (self = [super init]) {
         self.storageQueue = dispatch_queue_create("OTR.OTRvCardYapDatabaseStorage", NULL);
-        self.databaseConnection = [[OTRDatabaseManager sharedInstance] newConnection];
+        self.databaseConnection = [OTRDatabaseManager sharedInstance].readWriteDatabaseConnection;
     }
     return self;
 }
@@ -87,7 +86,7 @@
  **/
 - (void)clearvCardTempForJID:(XMPPJID *)jid xmppStream:(XMPPStream *)stream
 {
-    [self.databaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         id<OTRvCard> vCard = nil;
         if ([jid isEqualToJID:stream.myJID options:XMPPJIDCompareBare]) {
             vCard = [OTRXMPPAccount accountForStream:stream transaction:transaction];
@@ -139,7 +138,7 @@
  **/
 - (void)setvCardTemp:(XMPPvCardTemp *)vCardTemp forJID:(XMPPJID *)jid xmppStream:(XMPPStream *)stream
 {
-    [self.databaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         id<OTRvCard> vCard = nil;
         if ([stream.myJID isEqualToJID:jid options:XMPPJIDCompareBare]) {
             vCard = [[OTRXMPPAccount accountForStream:stream transaction:transaction] copy];
@@ -179,23 +178,25 @@
     
     __block BOOL result = NO;
     
-    [self.databaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    // Saving is not required due to internal use of in-memory OTRBuddyCache
+    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         id<OTRvCard> vCard = nil;
         if ([jid isEqualToJID:stream.myJID options:XMPPJIDCompareBare]) {
-            vCard = [[OTRXMPPAccount accountForStream:stream transaction:transaction] copy];
+            vCard = [OTRXMPPAccount accountForStream:stream transaction:transaction];
         } else {
-            vCard = [[self buddyWithJID:jid xmppStream:stream transaction:transaction] copy];
+            vCard = [self buddyWithJID:jid xmppStream:stream transaction:transaction];
         }
         
         if (vCard.waitingForvCardTempFetch) {
             result = NO;
         } else if ([vCard.lastUpdatedvCardTemp timeIntervalSinceNow] <= -24*60*60 ||
                    !vCard.vCardTemp) {
+            //This goes to the cache and does not change the database object.
             vCard.waitingForvCardTempFetch = YES;
-            [vCard saveWithTransaction:transaction];
             result = YES;
         }
     }];
+    
     
     return result;
 }

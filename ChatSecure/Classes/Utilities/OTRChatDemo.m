@@ -10,8 +10,12 @@
 #import "OTRDatabaseManager.h"
 
 #import "OTRXMPPBuddy.h"
-#import "OTRMessage.h"
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
 #import "OTRXMPPAccount.h"
+#import "OTROMEMODevice.h"
+#import "OTRBuddyCache.h"
+#import "OTRPasswordGenerator.h"
 @import OTRAssets;
 
 @implementation OTRChatDemo
@@ -19,7 +23,7 @@
 + (void)loadDemoChatInDatabase
 {
     NSArray *buddyNames = @[@"Martin Hellman",@"Nikita Borisov",@"Whitfield Diffie"];
-    NSString *accountName = @"username@domain.com";
+    NSString *accountName = @"username@example.com";
     NSArray *helloArray = @[@"Hello",
                             @"Bonjour",
                             @"Hallo",
@@ -33,8 +37,7 @@
         
         [transaction removeAllObjectsInAllCollections];
         
-        OTRXMPPAccount *account = [[OTRXMPPAccount alloc] initWithAccountType:OTRAccountTypeJabber];
-        account.username = accountName;
+        OTRXMPPAccount *account = [[OTRXMPPAccount alloc] initWithUsername:accountName accountType:OTRAccountTypeJabber];
         [account saveWithTransaction:transaction];
         
         NSArray *avatarImageNames = @[@"avatar_fox",@"avatar_otter",@"avatar_badger"];
@@ -45,42 +48,51 @@
                 buddy = [[OTRXMPPBuddy alloc] init];
                 NSString *imageName = avatarImageNames[idx];
                 buddy.avatarData = UIImagePNGRepresentation([UIImage imageNamed:imageName inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil]);
+                NSString *firstName = [[name componentsSeparatedByString:@" "].firstObject lowercaseString];
+                NSString *jidString = [NSString stringWithFormat:@"%@@example.com", firstName];
                 buddy.displayName = name;
-                buddy.username = name;
+                buddy.username = jidString;
                 buddy.accountUniqueId  = account.uniqueId;
-                
+                [OTRBuddyCache.shared setThreadStatus:OTRThreadStatusAvailable forBuddy:buddy resource:nil];
+                buddy.preferredSecurity = OTRSessionSecurityOMEMO;
+                NSData *fingerprintData = [OTRPasswordGenerator randomDataWithLength:32];
+                OTROMEMODevice *device = [[OTROMEMODevice alloc] initWithDeviceId:@(1) trustLevel:OMEMOTrustLevelTrustedUser parentKey:buddy.uniqueId parentCollection:[buddy.class collection] publicIdentityKeyData:fingerprintData lastSeenDate:[NSDate date]];
+                [device saveWithTransaction:transaction];
             }
             
-            buddy.status = (NSInteger)OTRThreadStatusAvailable+idx;
+            [OTRBuddyCache.shared setThreadStatus:(NSInteger)OTRThreadStatusAvailable+idx forBuddy:buddy resource:nil];
             
             NSArray *textArray = [self shuffleHelloArray:helloArray];
             
             [buddy saveWithTransaction:transaction];
             
             [textArray enumerateObjectsUsingBlock:^(NSString *text, NSUInteger index, BOOL *stop) {
-                OTRMessage *message = [[OTRMessage alloc] init];
+                OTRBaseMessage *message = nil;
+                
+                if (index % 2) {
+                    message = [[OTRIncomingMessage alloc] init];
+                    ((OTRIncomingMessage *)message).read = YES;
+                }
+                else {
+                    OTROutgoingMessage *outgoingMessage = [[OTROutgoingMessage alloc] init];
+                    outgoingMessage.delivered = YES;
+                    outgoingMessage.dateSent = [NSDate date];
+                    message = outgoingMessage;
+                }
+                
+                message.messageSecurityInfo = [[OTRMessageEncryptionInfo alloc] initWithOMEMODevice:@"" collection:@""];
+                
                 message.text = text;
                 message.buddyUniqueId = buddy.uniqueId;
                 NSDateComponents *dateComponents = [[NSDateComponents alloc] init];
-                [dateComponents setHour:(-1*index)];
+                [dateComponents setMinute:(-1*index)];
                 message.date = [[NSCalendar currentCalendar] dateByAddingComponents:dateComponents toDate:[NSDate date] options:0];
                 
-                if (index % 2) {
-                   message.incoming = YES;
-                }
-                else {
-                    message.incoming = NO;
-                    message.delivered = YES;
-                }
-                
-                message.read = YES;
-                message.transportedSecurely = YES;
-                buddy.lastMessageDate = message.date;
+                buddy.lastMessageId = message.uniqueId;
                 
                 [message saveWithTransaction:transaction];
             }];
             
-            [buddy updateLastMessageDateWithTransaction:transaction];
             [buddy saveWithTransaction:transaction];
         }];
     }];

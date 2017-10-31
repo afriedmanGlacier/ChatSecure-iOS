@@ -7,7 +7,7 @@
 //
 
 #import "OTRMessagesHoldTalkViewController.h"
-#import "PureLayout.h"
+@import PureLayout;
 #import "OTRHoldToTalkView.h"
 #import "OTRAudioSessionManager.h"
 #import "OTRAudioTrashView.h"
@@ -16,7 +16,10 @@
 #import "OTRBuddy.h"
 #import "OTRXMPPManager.h"
 #import "OTRXMPPAccount.h"
-#import "OTRLanguageManager.h"
+
+#import <ChatSecureCore/ChatSecureCore-Swift.h>
+
+static Float64 kOTRMessagesMinimumAudioTime = .5;
 
 @import AVFoundation;
 @import OTRAssets;
@@ -57,7 +60,7 @@
                            forState:UIControlStateNormal];
     
     self.knockButton = [JSQMessagesToolbarButtonFactory defaultSendButtonItem];
-    NSString *title = KNOCK_STRING;
+    NSString *title = KNOCK_STRING();
     CGFloat maxHeight = 32.0f;
     [self.knockButton setTitle:title forState:UIControlStateNormal];
     
@@ -129,14 +132,14 @@
 
 - (void)setHold2TalkStatusWaiting
 {
-    self.hold2TalkButton.textLabel.text = HOLD_TO_TALK_STRING;
+    self.hold2TalkButton.textLabel.text = HOLD_TO_TALK_STRING();
     self.hold2TalkButton.textLabel.textColor = [UIColor whiteColor];
     self.hold2TalkButton.backgroundColor = [UIColor darkGrayColor];
 }
 
 - (void)setHold2TalkButtonRecording
 {
-    self.hold2TalkButton.textLabel.text = RELEASE_TO_SEND_STRING;
+    self.hold2TalkButton.textLabel.text = RELEASE_TO_SEND_STRING();
     self.hold2TalkButton.textLabel.textColor = [UIColor darkGrayColor];
     self.hold2TalkButton.backgroundColor = [UIColor whiteColor];
 }
@@ -193,13 +196,25 @@
 #pragma - mark JSQMessageViewController
 
 - (void)isTyping {
-    OTRXMPPManager *xmppManager = [self xmppManager];
-    [xmppManager sendChatState:kOTRChatStateComposing withBuddyID:[self threadKey]];
+    __weak __typeof__(self) weakSelf = self;
+    [self.readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        __typeof__(self) strongSelf = weakSelf;
+        OTRXMPPManager *xmppManager = [strongSelf xmppManagerWithTransaction:transaction];
+        [xmppManager sendChatState:OTRChatStateComposing withBuddyID:[strongSelf threadKey]];
+    }];
+    
+    
 }
 
 - (void)didFinishTyping {
-    OTRXMPPManager *xmppManager = [self xmppManager];
-    [xmppManager sendChatState:kOTRChatStateActive withBuddyID:[self threadKey]];
+    __weak __typeof__(self) weakSelf = self;
+    [self.readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        __typeof__(self) strongSelf = weakSelf;
+        OTRXMPPManager *xmppManager = [strongSelf xmppManagerWithTransaction:transaction];
+        [xmppManager sendChatState:OTRChatStateActive withBuddyID:[strongSelf threadKey]];
+    }];
+    
+    
 }
 
 - (void)didUpdateState
@@ -209,10 +224,19 @@
         self.inputToolbar.contentView.rightBarButtonItem = self.knockButton;
         self.inputToolbar.sendButtonLocation = JSQMessagesInputSendButtonLocationNone;
         self.inputToolbar.contentView.rightBarButtonItem.enabled = YES;
+    } else {
+        [self setupDefaultSendButton];
+        if (self.state.hasText) {
+            self.inputToolbar.contentView.rightBarButtonItem.enabled = YES;
+        } else {
+            self.inputToolbar.contentView.rightBarButtonItem.enabled = NO;
+        }
     }
-    else if (self.state.isThreadOnline && self.state.isEncrypted) {
+    
+    if (self.state.canSendMedia) {
         //Encrypted Show camera button
         self.inputToolbar.contentView.leftBarButtonItem = self.cameraButton;
+        self.inputToolbar.contentView.leftBarButtonItem.enabled = YES;
         
         if (!self.state.hasText) {
             //No text then show microphone
@@ -228,16 +252,8 @@
             [self setupDefaultSendButton];
             self.inputToolbar.contentView.rightBarButtonItem.enabled = YES;
         }
-        
-        
     } else {
         [self removeMediaButtons];
-        [self setupDefaultSendButton];
-        if (self.state.hasText) {
-            self.inputToolbar.contentView.rightBarButtonItem.enabled = YES;
-        } else {
-            self.inputToolbar.contentView.rightBarButtonItem.enabled = NO;
-        }
     }
 }
 
@@ -262,7 +278,9 @@
     //start Recording
     [[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL granted) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (granted) {
+            if (![view isInTouch]) {
+                // Abort this, no longer in touch
+            } else if (granted) {
                 [self addRecordingBackgroundView];
                 [self addTrashViewItems];
                 NSString *temporaryPath = NSTemporaryDirectory();
@@ -272,12 +290,12 @@
                 [self.audioSessionManager recordAudioToURL:url error:nil];
                 [self setHold2TalkButtonRecording];
             } else {
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Microphone Disabled", @"microphone permission is disabled") message:@"To use this feature you must re-enable microphone permissions." preferredStyle:UIAlertControllerStyleAlert];
-                UIAlertAction *fix = [UIAlertAction actionWithTitle:NSLocalizedString(@"Enable", @"enable permission") style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:Microphone_Disabled() message:Microphone_Reenable_Please() preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertAction *fix = [UIAlertAction actionWithTitle:Enable_String() style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
                     NSURL *settings = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
                     [[UIApplication sharedApplication] openURL:settings];
                 }];
-                UIAlertAction *cancel = [UIAlertAction actionWithTitle:NSLocalizedString(@"Cancel", @"cancel button") style:UIAlertActionStyleCancel handler:nil];
+                UIAlertAction *cancel = [UIAlertAction actionWithTitle:CANCEL_STRING() style:UIAlertActionStyleCancel handler:nil];
                 [alert addAction:fix];
                 [alert addAction:cancel];
                 [self presentViewController:alert animated:YES completion:nil];
@@ -311,11 +329,11 @@
     if (insideButton) {
         self.trashView.trashIconLabel.alpha = 1;
         self.trashView.microphoneIconLabel.alpha = 0;
-        self.hold2TalkButton.textLabel.text = RELEASE_TO_DELETE_STRING;
+        self.hold2TalkButton.textLabel.text = RELEASE_TO_DELETE_STRING();
     } else {
         self.trashView.trashIconLabel.alpha = percentDistance;
         self.trashView.microphoneIconLabel.alpha = 1-percentDistance;
-        self.hold2TalkButton.textLabel.text = RELEASE_TO_SEND_STRING;
+        self.hold2TalkButton.textLabel.text = RELEASE_TO_SEND_STRING();
     }
     
     [self.view setNeedsUpdateConstraints];
@@ -326,9 +344,14 @@
     //stop recording and send
     NSURL *currentURL = [self.audioSessionManager currentRecorderURL];
     [self.audioSessionManager stopRecording];
+    AVURLAsset *audioAsset = [AVURLAsset assetWithURL:currentURL];
+    Float64 duration = CMTimeGetSeconds(audioAsset.duration);
+    
     
     if (currentURL) {
-        if (self.trashView.trashButton.isHighlighted) {
+        // Delete recording if the button trash button is slelected or the audio is less than the minimum time.
+        // This prevents taps on the record button from sending audio with extremely little length
+        if (self.trashView.trashButton.isHighlighted || duration < kOTRMessagesMinimumAudioTime) {
             if([[NSFileManager defaultManager] fileExistsAtPath:currentURL.path]) {
                 [[NSFileManager defaultManager] removeItemAtPath:currentURL.path error:nil];
             }
@@ -404,19 +427,19 @@
         //Create PushMessage to insert into conversation timeline
         __block PushMessage *message = [[PushMessage alloc] init];
         message.buddyKey = self.threadKey;
-        [self.databaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+        [self.readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
             [message saveWithTransaction:transaction];
         }];
         
         //Actually send off knock
         __weak __typeof__(self) weakSelf = self;
-        [[OTRAppDelegate appDelegate].pushController sendKnock:self.threadKey completion:^(BOOL success, NSError * _Nullable error) {
+        [[OTRProtocolManager sharedInstance].pushController sendKnock:self.threadKey completion:^(BOOL success, NSError * _Nullable error) {
             
             //If there was an error sending off knock then mark the message with it
             if(error != nil) {
                 __typeof__(self) strongSelf = weakSelf;
                 message.error = error;
-                [strongSelf.databaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+                [strongSelf.readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
                     [message saveWithTransaction:transaction];
                 }];
             }

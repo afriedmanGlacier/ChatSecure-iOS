@@ -9,31 +9,73 @@
 import Foundation
 import YapDatabase
 
-public class OTRXMPPRoomOccupant: OTRYapDatabaseObject, YapDatabaseRelationshipNode {
+@objc public enum RoomOccupantRole:Int {
+    case none = 0
+    case participant = 1
+    case moderator = 2
+    case visitor = 3
     
-    public static let roomEdgeName = "OTRRoomOccupantEdgeName"
+    public func canModifySubject() -> Bool {
+        switch self {
+        case .moderator: return true // TODO - Check muc#roomconfig_changesubject, participants may be allowed to change subject based on config!
+        default: return false
+        }
+    }
     
-    public var available = false
+    public func canInviteOthers() -> Bool {
+        switch self {
+        case .moderator: return true // TODO - participants may be allowed
+        default: return false
+        }
+    }
+}
+
+@objc public enum RoomOccupantAffiliation:Int {
+    case none = 0
+    case outcast = 1
+    case member = 2
+    case admin = 3
+    case owner = 4
+    
+    public func isOwner() -> Bool {
+        switch self {
+        case .owner: return true
+        default: return false
+        }
+    }
+}
+
+open class OTRXMPPRoomOccupant: OTRYapDatabaseObject, YapDatabaseRelationshipNode {
+    
+    @objc open static let roomEdgeName = "OTRRoomOccupantEdgeName"
+    
+    @objc open var available = false
     
     /** This is the JID of the participant as it's known in the room i.e. baseball_chat@conference.dukgo.com/user123 */
-    public var jid:String?
+    @objc open var jid:String?
     
     /** This is the name your known as in the room. Seems to be username without domain */
-    public var roomName:String?
+    @objc open var roomName:String?
     
+    /** This is the role of the occupant in the room */
+    @objc open var role:RoomOccupantRole = .none
+
+    /** This is the affiliation of the occupant in the room */
+    @objc open var affiliation:RoomOccupantAffiliation = .none
+
     /**When given by the server we get the room participants reall JID*/
-    public var realJID:String?
+    @objc open var realJID:String?
     
-    public var roomUniqueId:String?
+    @objc open var roomUniqueId:String?
     
-    public func avatarImage() -> UIImage {
-        return OTRImages.avatarImageWithUniqueIdentifier(self.uniqueId, avatarData: nil, displayName: nil, username: self.realJID)
+    @objc open func avatarImage() -> UIImage {
+        return OTRImages.avatarImage(withUniqueIdentifier: self.uniqueId, avatarData: nil, displayName: roomName ?? realJID ?? jid, username: self.realJID)
     }
     
     //MARK: YapDatabaseRelationshipNode Methods
-    public func yapDatabaseRelationshipEdges() -> [YapDatabaseRelationshipEdge]? {
+    open func yapDatabaseRelationshipEdges() -> [YapDatabaseRelationshipEdge]? {
         if let roomID = self.roomUniqueId {
-            let relationship = YapDatabaseRelationshipEdge(name: OTRXMPPRoomOccupant.roomEdgeName, sourceKey: self.uniqueId, collection: OTRXMPPRoomOccupant.collection(), destinationKey: roomID, collection: OTRXMPPRoom.collection(), nodeDeleteRules: YDB_NodeDeleteRules.DeleteSourceIfDestinationDeleted)
+            let relationship = YapDatabaseRelationshipEdge(name: OTRXMPPRoomOccupant.roomEdgeName, sourceKey: self.uniqueId, collection: OTRXMPPRoomOccupant.collection, destinationKey: roomID, collection: OTRXMPPRoom.collection, nodeDeleteRules: YDB_NodeDeleteRules.deleteSourceIfDestinationDeleted)
             return [relationship]
         }
         return nil

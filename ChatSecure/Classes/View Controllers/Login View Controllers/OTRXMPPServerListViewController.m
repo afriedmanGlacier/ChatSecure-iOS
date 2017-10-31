@@ -10,9 +10,9 @@
 #import "XMPPServerInfoCell.h"
 #import "OTRImages.h"
 @import OTRAssets;
-#import "XLFormTextFieldCell.h"
+@import XLForm;
 #import "OTRXMPPServerInfo.h"
-#import "OTRLanguageManager.h"
+#import "NSURL+ChatSecure.h"
 
 NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServerListViewControllerCustomTag";
 
@@ -31,7 +31,6 @@ NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServ
     return [self initWithForm:[[self class] defaultServerForm]];
 }
 
-
 - (void)didSelectFormRow:(XLFormRowDescriptor *)formRow
 {
     if ([formRow.value isKindOfClass:[OTRXMPPServerInfo class]]) {
@@ -40,6 +39,8 @@ NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServ
         [self.navigationController popViewControllerAnimated:YES];
     }
 }
+
+#pragma mark View Lifecycle
 
 - (void)viewWillAppear:(BOOL)animated
 {
@@ -64,12 +65,23 @@ NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServ
     if (!self.selectedPreset) {
         NSString *customDomain = [self.form formRowWithTag:kOTROTRXMPPServerListViewControllerCustomTag].value;
         if ([customDomain length]) {
-            OTRXMPPServerInfo *info = [[OTRXMPPServerInfo alloc] init];
-            info.name = customDomain;
-            info.domain = customDomain;
+            OTRXMPPServerInfo *info = [[OTRXMPPServerInfo alloc] initWithDomain:customDomain];
             self.rowDescriptor.value = info;
         }
     }
+}
+
+#pragma - mark UITableViewDataSource
+
+- (UITableViewCell*)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    XMPPServerInfoCell *infoCell = nil;
+    // This is required for the XMPPServerInfoCell buttons to work
+    if ([cell isKindOfClass:[XMPPServerInfoCell class]]) {
+        infoCell = (XMPPServerInfoCell*)cell;
+        [infoCell setupWithParentViewController:self];
+    }
+    return cell;
 }
 
 #pragma - mark UITextFieldMethods
@@ -101,7 +113,7 @@ NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServ
 {
     NSArray *serverList = [OTRXMPPServerInfo defaultServerList];
     
-    XLFormDescriptor *formDescriptor = [XLFormDescriptor formDescriptorWithTitle:NSLocalizedString(@"Choose Server", @"title for server selection screen")];
+    XLFormDescriptor *formDescriptor = [XLFormDescriptor formDescriptorWithTitle:Choose_Server_String()];
     XLFormSectionDescriptor *sectionDescriptor = [[XLFormSectionDescriptor alloc] init];
     [formDescriptor addFormSection:sectionDescriptor];
     
@@ -111,9 +123,8 @@ NSString *const kOTROTRXMPPServerListViewControllerCustomTag = @"kOTROTRXMPPServ
         [sectionDescriptor addFormRow:rowDescriptor];
     }
     
-    XLFormRowDescriptor *customRowDescriptor = [XLFormRowDescriptor formRowDescriptorWithTag:kOTROTRXMPPServerListViewControllerCustomTag rowType:XLFormRowDescriptorTypeURL title:CUSTOM_STRING];
-    [customRowDescriptor.cellConfigAtConfigure setObject:NSLocalizedString(@"example.com", @"example XMPP server domain") forKey:@"textField.placeholder"];
-
+    XLFormRowDescriptor *customRowDescriptor = [XLFormRowDescriptor formRowDescriptorWithTag:kOTROTRXMPPServerListViewControllerCustomTag rowType:XLFormRowDescriptorTypeURL title:CUSTOM_STRING()];
+    [customRowDescriptor.cellConfigAtConfigure setObject:@"example.com" forKey:@"textField.placeholder"];
     
     [sectionDescriptor addFormRow:customRowDescriptor];
     

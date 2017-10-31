@@ -7,13 +7,13 @@
 //
 
 #import "OTRStreamManagementYapStorage.h"
-#import "XMPPStreamManagement.h"
-#import "YapDatabaseConnection.h"
+@import XMPPFramework;
+@import YapDatabase;
 #import "OTRStreamManagementStorageObject.h"
 
 @interface OTRStreamManagementYapStorage ()
 
-@property (nonatomic) dispatch_queue_t parentQueue;
+@property (nonatomic, readonly) dispatch_queue_t parentQueue;
 
 @end
 
@@ -22,7 +22,7 @@
 - (instancetype)initWithDatabaseConnection:(YapDatabaseConnection *)databaseConnection
 {
     if (self = [super init]) {
-        self.databaseConnection = databaseConnection;
+        _databaseConnection = databaseConnection;
     }
     return self;
 }
@@ -61,7 +61,7 @@
  **/
 - (BOOL)configureWithParent:(XMPPStreamManagement *)parent queue:(dispatch_queue_t)queue
 {
-    self.parentQueue = queue;
+    _parentQueue = queue;
     return YES;
 }
 
@@ -72,6 +72,8 @@
     
     if (!storageObject) {
         storageObject = [[OTRStreamManagementStorageObject alloc] initWithUniqueId:accountUniqueId];
+    } else {
+        storageObject = [storageObject copy];
     }
     
     return storageObject;
@@ -171,6 +173,7 @@
    pendingOutgoingStanzas:(NSArray *)pendingOutgoingStanzas
                 forStream:(XMPPStream *)stream
 {
+    //TODO: only do saves every so often
     [self.databaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         OTRStreamManagementStorageObject *storageObject = [self fetchOrCreateStorageObjectWithStream:stream transaction:transaction];
         storageObject.lastDisconnectDate = date;
@@ -260,9 +263,9 @@
  * Invoked when the extension needs values from a previous session.
  * This method is used to get values needed in order to determine if it can resume a previous stream.
  **/
-- (void)getResumptionId:(NSString **)resumptionIdPtr
+- (void)getResumptionId:(NSString * __autoreleasing *)resumptionIdPtr
                 timeout:(uint32_t *)timeoutPtr
-         lastDisconnect:(NSDate **)lastDisconnectPtr
+         lastDisconnect:(NSDate * __autoreleasing *)lastDisconnectPtr
               forStream:(XMPPStream *)stream
 {
     [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
@@ -279,10 +282,10 @@
  * Invoked when the extension needs values from a previous session.
  * This method is used to get values needed in order to resume a previous stream.
  **/
-- (void)getLastHandledByClient:(uint32_t *)lastHandledByClientPtr
-           lastHandledByServer:(uint32_t *)lastHandledByServerPtr
-        pendingOutgoingStanzas:(NSArray **)pendingOutgoingStanzasPtr
-                     forStream:(XMPPStream *)stream
+- (void)getLastHandledByClient:(uint32_t * _Nullable)lastHandledByClientPtr
+           lastHandledByServer:(uint32_t * _Nullable)lastHandledByServerPtr
+        pendingOutgoingStanzas:(NSArray<XMPPStreamManagementOutgoingStanza*> * _Nullable __autoreleasing * _Nullable)pendingOutgoingStanzasPtr
+                     forStream:(XMPPStream *)stream;
 {
     [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         OTRStreamManagementStorageObject *storageObject = [OTRStreamManagementStorageObject fetchObjectWithUniqueID:[self accountUniqueIdForStream:stream] transaction:transaction];

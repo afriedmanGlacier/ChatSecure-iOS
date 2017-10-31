@@ -6,11 +6,9 @@
 //  Copyright (c) 2015 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
+@import Foundation;
 #import "OTRXMPPLoginHandler.h"
 
 @interface OTRXMPPCreateAccountHandler : OTRXMPPLoginHandler
-
-@property (nonatomic, strong) NSString *password;
 
 @end

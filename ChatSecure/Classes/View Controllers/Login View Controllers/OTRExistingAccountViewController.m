@@ -7,7 +7,6 @@
 //
 
 #import "OTRExistingAccountViewController.h"
-#import "PureLayout.h"
 #import "OTRCircleView.h"
 #import "OTRWelcomeAccountTableViewDelegate.h"
 #import "OTRImages.h"
@@ -17,12 +16,11 @@
 #import "OTRXMPPCreateAccountHandler.h"
 #import "OTRGoogleOAuthXMPPAccount.h"
 #import "OTRGoolgeOAuthLoginHandler.h"
-#import "GTMOAuth2ViewControllerTouch.h"
-#import "OTRSecrets.h"
+@import gtm_oauth2;
 #import "OTRDatabaseManager.h"
-#import "OTRChatSecureIDCreateAccountHandler.h"
 #import "OTRWelcomeAccountTableViewDelegate.h"
 @import OTRAssets;
+@import PureLayout;
 
 @implementation OTRWelcomeAccountInfo
 
@@ -102,8 +100,8 @@
     [accountArray addObject:[OTRWelcomeAccountInfo accountInfoWithText:@"XMPP" image:[UIImage imageNamed:@"xmpp" inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil] didSelectBlock:^{
         __typeof__(self) strongSelf = weakSelf;
 		OTRBaseLoginViewController *loginViewController = [[OTRBaseLoginViewController alloc] init];
-        loginViewController.form = [OTRXLFormCreator formForAccountType:OTRAccountTypeJabber createAccount:NO];
-        loginViewController.createLoginHandler = [[OTRXMPPLoginHandler alloc] init];
+        loginViewController.form = [XLFormDescriptor existingAccountFormWithAccountType:OTRAccountTypeJabber];
+        loginViewController.loginHandler = [[OTRXMPPLoginHandler alloc] init];
         [strongSelf.navigationController pushViewController:loginViewController animated:YES];
     }]];
     
@@ -112,18 +110,16 @@
         //Authenicate and go through google oauth
         GTMOAuth2ViewControllerTouch * oauthViewController = [GTMOAuth2ViewControllerTouch controllerWithScope:[OTRBranding googleAppScope] clientID:[OTRBranding googleAppId] clientSecret:[OTRSecrets googleAppSecret] keychainItemName:nil completionHandler:^(GTMOAuth2ViewControllerTouch *viewController, GTMOAuth2Authentication *auth, NSError *error) {
             if (!error) {
-                OTRGoogleOAuthXMPPAccount *googleAccount = [[OTRGoogleOAuthXMPPAccount alloc] initWithAccountType:OTRAccountTypeGoogleTalk];
-                googleAccount.username = auth.userEmail;
+                OTRGoogleOAuthXMPPAccount *googleAccount = [[OTRGoogleOAuthXMPPAccount alloc] initWithUsername:auth.userEmail accountType:OTRAccountTypeGoogleTalk];
                 googleAccount.oAuthTokenDictionary = auth.parameters;
                 
                 [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
                     [googleAccount saveWithTransaction:transaction];
                 }];
                 
-                OTRBaseLoginViewController *loginViewController = [[OTRBaseLoginViewController alloc] initWithForm:[OTRXLFormCreator formForAccount:googleAccount] style:UITableViewStyleGrouped];
-                loginViewController.account = googleAccount;
+                OTRBaseLoginViewController *loginViewController = [[OTRBaseLoginViewController alloc] initWithAccount:googleAccount];
                 OTRGoolgeOAuthLoginHandler *loginHandler = [[OTRGoolgeOAuthLoginHandler alloc] init];
-                loginViewController.createLoginHandler = loginHandler;
+                loginViewController.loginHandler = loginHandler;
                 
                 NSMutableArray *viewControllers = [strongSelf.navigationController.viewControllers mutableCopy];
                 [viewControllers removeObject:viewController];

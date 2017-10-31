@@ -10,8 +10,9 @@
 #import "OTRConversationViewController.h"
 #import "OTRMessagesHoldTalkViewController.h"
 #import "OTRComposeViewController.h"
-#import "OTRMessagesGroupViewController.h"
 #import "OTRInviteViewController.h"
+#import "OTRSettingsViewController.h"
+#import <ChatSecureCore/ChatSecureCore-Swift.h>
 
 @implementation OTRTheme
 
@@ -29,24 +30,35 @@
 }
 
 
-- (Class) conversationViewControllerClass {
-    return [OTRConversationViewController class];
+- (__kindof UIViewController*) conversationViewController {
+    return [[OTRConversationViewController alloc] init];
 }
 
-- (Class) groupMessagesViewControllerClass {
-    return [OTRMessagesGroupViewController class];
+/** Override this in subclass to use a different group message view controller class */
+- (JSQMessagesViewController *) messagesViewController{
+    return [OTRMessagesHoldTalkViewController messagesViewController];
 }
 
-- (Class) messagesViewControllerClass {
-    return [OTRMessagesHoldTalkViewController class];
+/** Returns new instance. Override this in subclass to use a different settings view controller class */
+- (__kindof UIViewController *) settingsViewController {
+    return [[OTRSettingsViewController alloc] init];
 }
 
-- (Class)composeViewControllerClass {
-    return [OTRComposeViewController class];
+- (__kindof UIViewController *) composeViewController {
+    return [[OTRComposeViewController alloc] init];
 }
 
-- (Class)inviteViewControllerClass {
-    return [OTRInviteViewController class];
+- (__kindof UIViewController* ) inviteViewControllerForAccount:(OTRAccount*)account {
+    return [[OTRInviteViewController alloc] initWithAccount:account];
+}
+
+- (__kindof UIViewController* ) accountDetailViewControllerForAccount:(OTRXMPPAccount*)account xmpp:(OTRXMPPManager * _Nonnull)xmpp longLivedReadConnection:(YapDatabaseConnection * _Nonnull)longLivedReadConnection writeConnection:(YapDatabaseConnection * _Nonnull)writeConnection {
+    return [[OTRAccountDetailViewController alloc] initWithAccount:account xmpp:xmpp longLivedReadConnection:longLivedReadConnection writeConnection:writeConnection];
+}
+
+- (BOOL) enableOMEMO
+{
+    return YES;
 }
 
 @end

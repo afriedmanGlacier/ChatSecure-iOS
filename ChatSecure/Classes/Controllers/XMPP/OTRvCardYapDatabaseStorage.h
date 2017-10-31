@@ -6,10 +6,9 @@
 //  Copyright (c) 2014 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
+@import Foundation;
 
-#import "XMPPvCardTempModule.h"
-#import "XMPPvCardAvatarModule.h"
+@import XMPPFramework;
 
 @interface OTRvCardYapDatabaseStorage : NSObject <XMPPvCardAvatarStorage,XMPPvCardTempModuleStorage>
 

@@ -9,7 +9,7 @@
 #import "OTRNewBuddyViewController.h"
 #import "OTRInLineTextEditTableViewCell.h"
 #import "OTRProtocolManager.h"
-#import <QuartzCore/QuartzCore.h>
+@import QuartzCore;
 @import OTRAssets;
 #import "OTRXMPPManager.h"
 #import "OTRDatabaseManager.h"
@@ -19,11 +19,11 @@
 #import "OTRXMPPAccount.h"
 #import "OTRXMPPBuddy.h"
 
-#import "QRCodeReaderViewController.h"
-#import "QRCodeReader.h"
-#import "XMPPURI.h"
-#import "OTRLanguageManager.h"
+@import QRCodeReaderViewController;
+@import XMPPFramework;
+
 #import "NSURL+ChatSecure.h"
+#import <ChatSecureCore/ChatSecureCore-Swift.h>
 
 @interface OTRNewBuddyViewController () <QRCodeReaderDelegate>
 
@@ -64,21 +64,21 @@
 {
     [super viewDidLoad];
     
-    self.title = ADD_BUDDY_STRING;
+    self.title = ADD_BUDDY_STRING();
     
     //self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCancel target:self action:@selector(cancelButtonPressed:)];
     
     
-    UIBarButtonItem *qrButton = [[UIBarButtonItem alloc] initWithTitle:QR_CODE_STRING style:UIBarButtonItemStylePlain target:self action:@selector(qrButtonPressed:)];
+    UIBarButtonItem *qrButton = [[UIBarButtonItem alloc] initWithTitle:QR_CODE_STRING() style:UIBarButtonItemStylePlain target:self action:@selector(qrButtonPressed:)];
     UIBarButtonItem *doneButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(doneButtonPressed:)];
     self.navigationItem.rightBarButtonItems = @[doneButton, qrButton];
     
     self.accountNameTextField = [[UITextField alloc] initWithFrame:CGRectZero];
-    self.accountNameTextField.placeholder = XMPP_USERNAME_EXAMPLE_STRING;
+    self.accountNameTextField.placeholder = XMPP_USERNAME_EXAMPLE_STRING();
     
     if (self.isXMPPaccount) {
         self.displayNameTextField = [[UITextField alloc] initWithFrame:CGRectZero];
-        self.displayNameTextField.placeholder = OPTIONAL_STRING;
+        self.displayNameTextField.placeholder = OPTIONAL_STRING();
         self.accountNameTextField.delegate= self.displayNameTextField.delegate = self;
         
         self.displayNameTextField.autocapitalizationType = self.accountNameTextField.autocapitalizationType = UITextAutocapitalizationTypeNone;
@@ -117,11 +117,11 @@
     
     if (indexPath.row == 0) {
         textField = self.accountNameTextField;
-        cellText = USERNAME_STRING;
+        cellText = USERNAME_STRING();
     }
     else if(indexPath.row == 1) {
         textField = self.displayNameTextField;
-        cellText = NAME_STRING;
+        cellText = NAME_STRING();
     }
     
     OTRInLineTextEditTableViewCell * cell = [tableView dequeueReusableCellWithIdentifier:cellType];
@@ -205,8 +205,9 @@
                 buddy = [[OTRXMPPBuddy alloc] init];
                 buddy.username = newBuddyAccountName;
                 buddy.accountUniqueId = self.account.uniqueId;
+                buddy.pendingApproval = YES;
                 // hack to show buddy in conversations view
-                buddy.lastMessageDate = [NSDate date];
+                buddy.lastMessageId = @"";
             }
             
             buddy.displayName = newBuddyDisplayName;
@@ -264,19 +265,32 @@
         }
     } else if ([resultURL otr_isInviteLink]) {
         NSURL *url = [NSURL URLWithString:result];
-        __block NSString *username = nil;
+        __block XMPPJID *jid = nil;
         __block NSString *fingerprint = nil;
-        [url otr_decodeShareLink:^(NSString *uName, NSString *fPrint) {
-            username = uName;
-            fingerprint = fPrint;
+        
+        NSString *otr = [OTRAccount fingerprintStringTypeForFingerprintType:OTRFingerprintTypeOTR];
+        [url otr_decodeShareLink:^(XMPPJID * _Nullable inJid, NSArray<NSURLQueryItem*> * _Nullable queryItems) {
+            jid = inJid;
+            [queryItems enumerateObjectsUsingBlock:^(NSURLQueryItem * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+                if ([obj.name isEqualToString:otr]) {
+                    fingerprint = obj.value;
+                    fingerprint = [fingerprint stringByReplacingOccurrencesOfString:@" " withString:@""];
+                    *stop = YES;
+                }
+            }];
         }];
+        NSString *username = jid.bare;
         if (username.length) {
             self.accountNameTextField.text = username;
         }
-#warning TODO: Process OTR fingerprint
-        // this is where you'd add the OTR (or Axolotl) fingerprint to the trusted store
+        // add the OTR fingerprint to the trusted store
+        NSData *fprintData = [fingerprint dataFromHex];
+        if (fprintData) {
+            OTRFingerprint *otrFingerprint = [[OTRFingerprint alloc] initWithUsername:username accountName:self.account.username protocol:self.account.protocolTypeString fingerprint:fprintData trustLevel:OTRTrustLevelTrustedUser];
+            [[OTRProtocolManager sharedInstance].encryptionManager.otrKit saveFingerprint:otrFingerprint];
+        }
     } else {
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:NSLocalizedString(@"Unrecognized Invite Format", @"shown when invite QR code doesnt work") message:nil preferredStyle:UIAlertControllerStyleAlert];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:Unrecognized_Invite_Format() message:nil preferredStyle:UIAlertControllerStyleAlert];
         [self presentViewController:alert animated:YES completion:nil];
     }
 }

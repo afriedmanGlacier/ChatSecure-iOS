@@ -6,23 +6,37 @@
 //  Copyright (c) 2013 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
+@import Foundation;
 
 @import YapDatabase;
+@import YapTaskQueue;
 
 #import "OTRMediaServer.h"
 #import "OTRMediaFileManager.h"
 
-extern NSString *const OTRYapDatabseMessageIdSecondaryIndexColumnName;
-extern NSString *const OTRYapDatabseRoomOccupantJIdSecondaryIndexColumnName;
+@class MessageQueueHandler;
+
+NS_ASSUME_NONNULL_BEGIN
+extern NSString *const OTRMessagesSecondaryIndex;
+extern NSString *const OTRYapDatabaseMessageIdSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseRemoteMessageIdSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseRoomOccupantJidSecondaryIndexColumnName;
 extern NSString *const OTRYapDatabaseUnreadMessageSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseSignalSessionSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseSignalPreKeyIdSecondaryIndexColumnName;
+extern NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName;
 
 @interface OTRDatabaseManager : NSObject
 
-@property (nonatomic, readonly) YapDatabase *database;
-@property (nonatomic, strong) OTRMediaServer *mediaServer;
-@property (nonatomic, readonly) YapDatabaseConnection *readOnlyDatabaseConnection;
-@property (nonatomic, readonly) YapDatabaseConnection *readWriteDatabaseConnection;
+@property (nonatomic, readonly, nullable) YapDatabase *database;
+@property (nonatomic, strong, nullable) OTRMediaServer *mediaServer;
+@property (nonatomic, readonly, nullable) YapDatabaseConnection *readOnlyDatabaseConnection;
+@property (nonatomic, readonly, nullable) YapDatabaseConnection *readWriteDatabaseConnection;
+
+@property (nonatomic, readonly, nullable) YapDatabaseConnection *longLivedReadOnlyConnection;
+
+@property (nonatomic, readonly, nullable) MessageQueueHandler *messageQueueHandler;
 
 
 /**
@@ -33,20 +47,26 @@ extern NSString *const OTRYapDatabaseUnreadMessageSecondaryIndexColumnName;
  @return whether setup was successful
  */
 - (BOOL)setupDatabaseWithName:(NSString*)databaseName;
+- (BOOL)setupDatabaseWithName:(NSString*)databaseName withMediaStorage:(BOOL)withMediaStorage;
 
-- (YapDatabaseConnection *)newConnection;
+- (nullable YapDatabaseConnection *)newConnection;
 
-- (void)setDatabasePassphrase:(NSString *)passphrase remember:(BOOL)rememeber error:(NSError**)error;
+- (void)setDatabasePassphrase:(NSString *)passphrase remember:(BOOL)rememeber error:(NSError *_Nullable*)error;
 
 
 - (BOOL)hasPassphrase;
 
-- (NSString *)databasePassphrase;
+- (nullable NSString *)databasePassphrase;
 
 + (BOOL)existsYapDatabase;
 
-+ (NSString *)yapDatabasePathWithName:(NSString *)name;
++ (NSString *)yapDatabaseDirectory;
++ (NSString *)yapDatabasePathWithName:(NSString *_Nullable)name;
+
 
 + (instancetype)sharedInstance;
+@property (class, nonatomic, readonly) OTRDatabaseManager *shared;
+
+NS_ASSUME_NONNULL_END
 
 @end

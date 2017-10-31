@@ -10,26 +10,22 @@ import Foundation
 import YapDatabase.YapDatabaseFullTextSearch
 import YapDatabase.YapDatabaseSearchResultsView
 
-public class OTRYapExtensions:NSObject {
+open class OTRYapExtensions:NSObject {
     
     /// Creates a FTS extension on the buddy's username and display name
-    public class func buddyFTS() -> YapDatabaseFullTextSearch {
+    @objc open class func buddyFTS() -> YapDatabaseFullTextSearch {
         
-        let usernameColumnName = BuddyFTSColumnName.Username.name()
-        let displayNameColumnName = BuddyFTSColumnName.DisplayName.name()
+        let usernameColumnName = BuddyFTSColumnName.username.name()
+        let displayNameColumnName = BuddyFTSColumnName.displayName.name()
         
         let searchHandler = YapDatabaseFullTextSearchHandler.withObjectBlock { (dict, collection, key, object) in
             guard let buddy = object as? OTRBuddy else {
                 return
             }
             
-            if let username = buddy.username {
-                dict.setObject(username, forKey: usernameColumnName)
-            }
+            dict.setObject(buddy.username, forKey: usernameColumnName as NSString)
             
-            if let displayNme = buddy.displayName {
-                dict.setObject(displayNme, forKey: displayNameColumnName)
-            }
+            dict.setObject(buddy.displayName, forKey: displayNameColumnName as NSString)
             
         }
         

@@ -21,6 +21,7 @@
 //  along with ChatSecure.  If not, see <http://www.gnu.org/licenses/>.
 #import "OTRConstants.h"
 
+NSString *const kOTRIgnoreDonationDateKey = @"kOTRIgnoreDonationDateKey";
 NSString *const kOTRProtocolLoginSuccess                   = @"LoginSuccessNotification";
 NSString *const kOTRProtocolLoginFail                      = @"LoginFailedNotification";
 NSString *const kOTRProtocolLoginFailErrorKey              = @"ProtocolLoginFailErrorKey";
@@ -33,10 +34,12 @@ NSString *const kOTRProtocolLoginUserInitiated             = @"kOTRProtocolLogin
 NSString *const kOTRProtocolTypeXMPP = @"xmpp";
 NSString *const kOTRProtocolTypeAIM  = @"prpl-oscar";
 
-NSString *const kOTRNotificationAccountNameKey   = @"kOTRNotificationAccountNameKey";
-NSString *const kOTRNotificationUserNameKey      = @"kOTRNotificationUserNameKey";
-NSString *const kOTRNotificationProtocolKey      = @"kOTRNotificationProtocolKey";
-NSString *const kOTRNotificationBuddyUniqueIdKey = @"kOTRNotificationBuddyUniqueIdKey";
+NSString *const kOTRNotificationAccountNameKey       = @"kOTRNotificationAccountNameKey";
+NSString *const kOTRNotificationUserNameKey          = @"kOTRNotificationUserNameKey";
+NSString *const kOTRNotificationProtocolKey          = @"kOTRNotificationProtocolKey";
+NSString *const kOTRNotificationBuddyUniqueIdKey     = @"kOTRNotificationBuddyUniqueIdKey";
+NSString *const kOTRNotificationAccountUniqueIdKey   = @"kOTRNotificationAccountUniqueIdKey";
+NSString *const kOTRNotificationAccountCollectionKey = @"kOTRNotificationAccountCollectionKey";
 
 
 NSString *const kOTRServiceName            = @"org.chatsecure.ChatSecure";
@@ -44,7 +47,6 @@ NSString *const kOTRCertificateServiceName = @"org.chatsecure.ChatSecure.Certifi
 
 NSString *const kOTRSettingKeyFontSize                 = @"kOTRSettingKeyFontSize";
 NSString *const kOTRSettingKeyDeleteOnDisconnect       = @"kOTRSettingKeyDeleteOnDisconnect";
-NSString *const kOTRSettingKeyOpportunisticOtr         = @"kOTRSettingKeyOpportunisticOtr";
 NSString *const kOTRSettingKeyShowDisconnectionWarning = @"kOTRSettingKeyShowDisconnectionWarning";
 NSString *const kOTRSettingUserAgreedToEULA            = @"kOTRSettingUserAgreedToEULA";
 NSString *const kOTRSettingAccountsKey                 = @"kOTRSettingAccountsKey";
@@ -59,7 +61,11 @@ NSString *const OTRArchiverKey = @"OTRArchiverKey";
 NSString *const kOTRErrorDomain = @"com.chatsecure";
 
 
+NSString *const OTRUserNotificationsUNTextInputReply = @"OTRUserNotificationsUNTextInputReply";
 NSString *const OTRUserNotificationsChanged = @"OTRUserNotificationsChanged";
+NSString *const OTRPushAccountDeviceChanged = @"OTRPushAccountDeviceChanged";
+NSString *const OTRPushAccountTokensChanged = @"OTRPushAccountTokensChanged";
+
 
 NSString *const OTRFailedRemoteNotificationRegistration = @"OTRFailedRemoteNotificationRegistration";
 NSString *const OTRSuccessfulRemoteNotificationRegistration = @"OTRSuccessfulRemoteNotificationRegistration";
@@ -71,6 +77,9 @@ NSString *const OTRYapDatabaseName = @"ChatSecureYap.sqlite";
 //Noticications
 NSString *const kOTRNotificationThreadKey = @"kOTRNotificationThreadKey";
 NSString *const kOTRNotificationThreadCollection = @"kOTRNotificationThreadCollection";
+NSString *const kOTRNotificationType = @"kOTRNotificationType";
+NSString *const kOTRNotificationTypeNone = @"kOTRNotificationTypeNone";
+NSString *const kOTRNotificationTypeSubscriptionRequest = @"kOTRNotificationTypeSubscriptionRequest";
 
 //NSUserDefaults
 NSString *const kOTRDeletedFacebookKey = @"kOTRDeletedFacebookKey";

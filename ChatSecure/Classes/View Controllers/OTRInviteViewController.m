@@ -7,49 +7,79 @@
 //
 
 #import "OTRInviteViewController.h"
-#import "PureLayout.h"
-#import "Strings.h"
-#import "BButton.h"
+@import PureLayout;
+@import BButton;
 #import "OTRAddBuddyQRCodeViewController.h"
-#import <MessageUI/MessageUI.h>
+@import MessageUI;
 #import "OTRAccount.h"
-#import "Strings.h"
 #import "OTRAppDelegate.h"
 #import "OTRTheme.h"
 #import "OTRColors.h"
 @import OTRAssets;
-#import "OTRLanguageManager.h"
+
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 
 static CGFloat const kOTRInvitePadding = 10;
+static CGFloat const kOTRButtonHeight = 40;
+
 
 @interface OTRInviteViewController () <MFMessageComposeViewControllerDelegate>
+@property (nonatomic, strong, readonly) UIImageView *titleImageView;
+@property (nonatomic, strong, readonly) UILabel *subtitleLabel;
 
+@property (nonatomic, strong, nullable) NSArray <BButton*> *shareButtons;
+@property (nonatomic, strong, readonly) BButton *serverInfoButton;
 @property (nonatomic) BOOL addedConstraints;
-
+@property (nonatomic, strong, readonly) ServerCheck *serverCheck;
 @end
 
 @implementation OTRInviteViewController
 
-- (instancetype)init
-{
-    if (self = [super init]) {
+- (instancetype) initWithAccount:(OTRAccount*)account {
+    if (self = [super initWithNibName:nil bundle:nil]) {
+        _account = account;
         _titleImageView = [[UIImageView alloc] initForAutoLayout];
         _subtitleLabel = [[UILabel alloc] initForAutoLayout];
         _subtitleLabel.numberOfLines = 0;
         _subtitleLabel.textColor = [OTRAppDelegate appDelegate].theme.buttonLabelColor;
         _subtitleLabel.textAlignment = NSTextAlignmentCenter;
+        [self setupServerCheck];
     }
     return self;
+}
+
+- (instancetype) initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
+    NSAssert(NO, @"Not supported");
+    @throw [NSException exceptionWithName:NSInvalidArgumentException reason:nil userInfo:nil];
+    return [self initWithAccount:[OTRAccount accountWithUsername:@"" accountType:OTRAccountTypeNone]];
+}
+
+- (instancetype) initWithCoder:(NSCoder *)aDecoder {
+    NSAssert(NO, @"Not supported");
+    @throw [NSException exceptionWithName:NSInvalidArgumentException reason:nil userInfo:nil];
+    return [self initWithAccount:[OTRAccount accountWithUsername:@"" accountType:OTRAccountTypeNone]];
+}
+
+- (void) setupServerCheck {
+    id<OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:self.account];
+    OTRXMPPManager *xmpp = nil;
+    if ([protocol isKindOfClass:[OTRXMPPManager class]]) {
+        xmpp = (OTRXMPPManager*)protocol;
+        _serverCheck = xmpp.serverCheck;
+    }
+    NSParameterAssert(_serverCheck != nil);
 }
 
 - (void) viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self.navigationItem setHidesBackButton:YES animated:animated];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(serverCheckUpdate:) name:ServerCheck.UpdateNotificationName object:self.serverCheck];
+    [self refreshServerInfoButton];
 }
 
 - (void) viewDidDisappear:(BOOL)animated {
     [super viewDidDisappear:animated];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self.navigationItem setHidesBackButton:NO animated:animated];
 }
 
@@ -57,10 +87,12 @@ static CGFloat const kOTRInvitePadding = 10;
 {
     [super viewDidLoad];
     self.view.backgroundColor = [OTRAppDelegate appDelegate].theme.mainThemeColor;
-    self.title = INVITE_LINK_STRING;
+    self.title = INVITE_LINK_STRING();
     
     self.titleImageView.image = [UIImage imageNamed:@"invite_success" inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil];
     self.titleImageView.contentMode = UIViewContentModeScaleAspectFit;
+    
+    self.subtitleLabel.text = [NSString stringWithFormat:@"%@ %@!\n\n%@",ONBOARDING_SUCCESS_STRING(),[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"] ,self.account.username];
     
     [self.view addSubview:self.titleImageView];
     [self.view addSubview:self.subtitleLabel];
@@ -71,13 +103,37 @@ static CGFloat const kOTRInvitePadding = 10;
     
     NSMutableArray *shareButtons = [[NSMutableArray alloc] initWithCapacity:2];
     
-    [shareButtons addObject:[self shareButtonWithIcon:FAEnvelope title:INVITE_LINK_STRING action:@selector(linkShareButtonPressed:)]];
-    [shareButtons addObject:[self shareButtonWithIcon:FACamera title:SCAN_QR_STRING action:@selector(qrButtonPressed:)]];
-    
+    [shareButtons addObject:[self buttonWithIcon:FAEnvelope title:INVITE_LINK_STRING() type:BButtonTypeDefault action:@selector(linkShareButtonPressed:)]];
+    [shareButtons addObject:[self buttonWithIcon:FACamera title:SCAN_QR_STRING() type:BButtonTypeDefault action:@selector(qrButtonPressed:)]];
     
     self.shareButtons = shareButtons;
     
+    [self setupServerInfoButton];
+    
     [self.view setNeedsUpdateConstraints];
+}
+
+- (void) serverCheckUpdate:(NSNotification*)notification {
+    [self refreshServerInfoButton];
+}
+
+- (void) setupServerInfoButton {
+    _serverInfoButton = [self buttonWithIcon:FAInfoCircle title:    SERVER_INFORMATION_STRING() type:BButtonTypeDefault action:@selector(warningButtonPressed:)];
+    [self.view addSubview:self.serverInfoButton];
+    [self refreshServerInfoButton];
+}
+
+- (void) refreshServerInfoButton {
+    if (![OTRBranding shouldShowPushWarning]) {
+        return;
+    }
+    if (self.serverCheck.getCombinedPushStatus == ServerCheckPushStatusBroken) {
+        [self.serverInfoButton setTitle:PUSH_WARNING_STRING() forState:UIControlStateNormal];
+        [self.serverInfoButton addAwesomeIcon:FAWarning beforeTitle:YES];
+    } else {
+        [self.serverInfoButton setTitle:SERVER_INFORMATION_STRING() forState:UIControlStateNormal];
+        [self.serverInfoButton addAwesomeIcon:FAInfoCircle beforeTitle:YES];
+    }
 }
 
 - (void)updateViewConstraints
@@ -93,6 +149,11 @@ static CGFloat const kOTRInvitePadding = 10;
         [self.subtitleLabel autoPinEdgeToSuperviewEdge:ALEdgeLeading withInset:kOTRInvitePadding];
         [self.subtitleLabel autoPinEdgeToSuperviewEdge:ALEdgeTrailing withInset:kOTRInvitePadding];
         
+        [self.serverInfoButton autoPinEdgeToSuperviewEdge:ALEdgeBottom withInset:kOTRInvitePadding * 2];
+        [self.serverInfoButton autoAlignAxisToSuperviewAxis:ALAxisVertical];
+        [self.serverInfoButton autoSetDimension:ALDimensionHeight toSize:kOTRButtonHeight];
+        [self.serverInfoButton autoMatchDimension:ALDimensionWidth toDimension:ALDimensionWidth ofView:self.shareButtons.firstObject];
+        
         self.addedConstraints = YES;
     }
 }
@@ -101,7 +162,7 @@ static CGFloat const kOTRInvitePadding = 10;
 {
     
     BButton *button = [self.shareButtons firstObject];
-    [button autoSetDimension:ALDimensionHeight toSize:40];
+    [button autoSetDimension:ALDimensionHeight toSize:kOTRButtonHeight];
     [self.shareButtons enumerateObjectsUsingBlock:^(UIButton *button, NSUInteger idx, BOOL *stop) {
         if (idx == 0){
             [button autoPinEdgeToSuperviewEdge:ALEdgeLeading withInset:kOTRInvitePadding];
@@ -116,15 +177,6 @@ static CGFloat const kOTRInvitePadding = 10;
         }
         [button autoPinEdge:ALEdgeTop toEdge:ALEdgeBottom ofView:self.subtitleLabel withOffset:kOTRInvitePadding];
     }];
-}
-
-- (void)setAccount:(OTRAccount *)account
-{
-    if(![account isEqual:_account]) {
-        _account = account;
-        
-        self.subtitleLabel.text = [NSString stringWithFormat:@"%@ %@!\n\n%@",ONBOARDING_SUCCESS_STRING,[[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"] ,self.account.username];
-    }
 }
 
 - (void)setShareButtons:(NSArray<BButton *> *)shareButtons
@@ -177,15 +229,20 @@ static CGFloat const kOTRInvitePadding = 10;
     [ShareController shareAccount:self.account sender:sender viewController:self];
 }
 
-- (UIButton *)shareButtonWithIcon:(FAIcon)icon title:(NSString *)title action:(SEL)action
+- (BButton *)buttonWithIcon:(FAIcon)icon title:(NSString *)title type:(BButtonType)type action:(SEL)action
 {
     
-    BButton *button = [[BButton alloc] initWithFrame:CGRectZero type:BButtonTypeDefault style:BButtonStyleBootstrapV3];
+    BButton *button = [[BButton alloc] initWithFrame:CGRectZero type:type style:BButtonStyleBootstrapV3];
     [button setTitle:title forState:UIControlStateNormal];
     [button addAwesomeIcon:icon beforeTitle:YES];
     button.titleLabel.font = [button.titleLabel.font fontWithSize:14];
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     return button;
+}
+
+- (void) warningButtonPressed:(id)sender {
+    OTRServerCapabilitiesViewController *scvc = [[OTRServerCapabilitiesViewController alloc] initWithServerCheck:self.serverCheck];
+    [self.navigationController pushViewController:scvc animated:YES];
 }
 
 #pragma - mark MFMessageComposeViewControllerDelegate Methods

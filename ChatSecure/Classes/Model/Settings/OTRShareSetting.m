@@ -16,13 +16,14 @@
 #import "OTRConstants.h"
 
 @implementation OTRShareSetting
+@synthesize delegate = _delegate;
 
 -(id)initWithTitle:(NSString *)newTitle description:(NSString *)newDescription
 {
     self = [super initWithTitle:newTitle description:newDescription];
     if (self) {
         __weak typeof(self)weakSelf = self;
-        self.actionBlock = ^{
+        self.actionBlock = ^void(id sender){
             __strong typeof(weakSelf)strongSelf = weakSelf;
             [strongSelf showActionSheet];
         };

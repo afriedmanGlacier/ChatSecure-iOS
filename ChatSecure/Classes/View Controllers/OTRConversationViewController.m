@@ -13,43 +13,49 @@
 #import "OTRComposeViewController.h"
 
 #import "OTRConversationCell.h"
-#import "OTRNotificationPermissions.h"
 #import "OTRAccount.h"
 #import "OTRBuddy.h"
 #import "OTRXMPPBuddy.h"
-#import "OTRMessage.h"
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
 #import "UIViewController+ChatSecure.h"
 #import "OTRLog.h"
-@import YapDatabase.YapDatabaseView;
+#import "UITableView+ChatSecure.h"
+@import YapDatabase;
 
 #import "OTRDatabaseManager.h"
 #import "OTRDatabaseView.h"
-#import <KVOController/NSObject+FBKVOController.h>
+@import KVOController;
 #import "OTRAppDelegate.h"
 #import "OTRTheme.h"
 #import "OTRProtocolManager.h"
 #import "OTRInviteViewController.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 @import OTRAssets;
-#import "OTRLanguageManager.h"
-#import "OTRMessagesGroupViewController.h"
+
 #import "OTRXMPPManager.h"
 #import "OTRXMPPRoomManager.h"
 #import "OTRXMPPPresenceSubscriptionRequest.h"
 #import "OTRBuddyApprovalCell.h"
+#import "OTRStrings.h"
+#import "OTRvCard.h"
+#import "XMPPvCardTemp.h"
 
 static CGFloat kOTRConversationCellHeight = 80.0;
 
-@interface OTRConversationViewController ()
+@interface OTRConversationViewController () <OTRYapViewHandlerDelegateProtocol, OTRAccountDatabaseCountDelegate >
 
 @property (nonatomic, strong) NSTimer *cellUpdateTimer;
-@property (nonatomic, strong) YapDatabaseConnection *databaseConnection;
-@property (nonatomic, strong) YapDatabaseViewMappings *mappings;
-@property (nonatomic, strong) YapDatabaseViewMappings *unreadMessagesMappings;
+@property (nonatomic, strong) OTRYapViewHandler *conversationListViewHandler;
 
 @property (nonatomic, strong) UIBarButtonItem *composeBarButtonItem;
 
 @property (nonatomic) BOOL hasPresentedOnboarding;
+
+@property (nonatomic, strong) OTRAccountDatabaseCount *accountCounter;
+@property (nonatomic, strong) MigrationInfoHeaderView *migrationInfoHeaderView;
+@property (nonatomic, strong) UISegmentedControl *inboxArchiveControl;
+
 @end
 
 @implementation OTRConversationViewController
@@ -60,12 +66,18 @@ static CGFloat kOTRConversationCellHeight = 80.0;
    
     ///////////// Setup Navigation Bar //////////////
     
-    self.title = CHATS_STRING;
+    self.title = CHATS_STRING();
     UIBarButtonItem *settingsBarButtonItem = [[UIBarButtonItem alloc] initWithImage:[UIImage imageNamed:@"OTRSettingsIcon" inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil] style:UIBarButtonItemStylePlain target:self action:@selector(settingsButtonPressed:)];
     self.navigationItem.rightBarButtonItem = settingsBarButtonItem;
     
     self.composeBarButtonItem =[[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemCompose target:self action:@selector(composeButtonPressed:)];
     self.navigationItem.leftBarButtonItems = @[self.composeBarButtonItem];
+    
+    _inboxArchiveControl = [[UISegmentedControl alloc] initWithItems:@[INBOX_STRING(), ARCHIVE_STRING()]];
+    _inboxArchiveControl.selectedSegmentIndex = 0;
+    [self updateInboxArchiveFilteringAndShowArchived:NO];
+    [_inboxArchiveControl addTarget:self action:@selector(inboxArchiveControlValueChanged:) forControlEvents:UIControlEventValueChanged];
+    self.navigationItem.titleView = _inboxArchiveControl;
     
     ////////// Create TableView /////////////////
     
@@ -86,81 +98,14 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     
     ////////// Create YapDatabase View /////////////////
     
-    self.databaseConnection = [[OTRDatabaseManager sharedInstance] newConnection];
-    self.databaseConnection.name = NSStringFromClass([self class]);
-    [self.databaseConnection beginLongLivedReadTransaction];
+    self.conversationListViewHandler = [[OTRYapViewHandler alloc] initWithDatabaseConnection:[OTRDatabaseManager sharedInstance].longLivedReadOnlyConnection databaseChangeNotificationName:[DatabaseNotificationName LongLivedTransactionChanges]];
+    self.conversationListViewHandler.delegate = self;
+    [self.conversationListViewHandler setup:OTRFilteredConversationsName groups:@[OTRAllPresenceSubscriptionRequestGroup, OTRConversationGroup]];
     
-    [self setupMappings:YES];
     [self.tableView reloadData];
-    [self setupUnreadMappings:YES];
-    [self updateTitle];
+    [self updateInboxArchiveItems:self.navigationItem.titleView];
     
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(yapDatabaseModified:)
-                                                 name:YapDatabaseModifiedNotification
-                                               object:nil];
-    
-    NSString *notificationName = [YapDatabaseConstants notificationName:DatbaseNotificationNameRegisteredExtension];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(extensionRegisteredNotification:) name:notificationName object:nil];
-    
-    ////// KVO //////
-    __weak typeof(self)weakSelf = self;
-    [self.KVOController observe:[OTRProtocolManager sharedInstance] keyPath:NSStringFromSelector(@selector(numberOfConnectedProtocols)) options:NSKeyValueObservingOptionNew block:^(id observer, id object, NSDictionary *change) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf)strongSelf = weakSelf;
-            NSUInteger numberConnectedAccounts = [[change objectForKey:NSKeyValueChangeNewKey] unsignedIntegerValue];
-            if (numberConnectedAccounts) {
-                [strongSelf enableComposeButton];
-            }
-            else {
-                [strongSelf disableComposeButton];
-            }
-        });
-    }];
-}
-
-// This helps solve a race condition when setting up the database asynchronously
-- (void) extensionRegisteredNotification:(NSNotification*)notification {
-    
-    NSString *key = [YapDatabaseConstants notificationKeyName:DatabaseNotificationKeyExtensionName];
-    NSString *name = notification.userInfo[key];
-    if ([name isEqualToString:OTRConversationDatabaseViewExtensionName]) {
-        [self setupMappings:YES];
-        [self.tableView reloadData];
-    } else if ([name isEqualToString:OTRUnreadMessagesViewExtensionName]) {
-        [self setupUnreadMappings:YES];
-        [self updateTitle];
-    }
-}
-
-- (void) setupMappings:(BOOL)update {
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
-        
-        if (!self.mappings && [transaction ext:OTRConversationDatabaseViewExtensionName]) {
-            self.mappings = [[YapDatabaseViewMappings alloc] initWithGroups:@[OTRAllPresenceSubscriptionRequestGroup, OTRConversationGroup]
-                                                                       view:OTRConversationDatabaseViewExtensionName];
-            if (update) {
-                [self.mappings updateWithTransaction:transaction];
-            }
-        }
-    }];
-}
-
-- (void) setupUnreadMappings:(BOOL)update {
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
-        if (!self.unreadMessagesMappings && [transaction ext:OTRUnreadMessagesViewExtensionName]) {
-            
-            self.unreadMessagesMappings = [[YapDatabaseViewMappings alloc] initWithGroupFilterBlock:^BOOL(NSString *group, YapDatabaseReadTransaction *transaction) {
-                return YES;
-            } sortBlock:^NSComparisonResult(NSString *group1, NSString *group2, YapDatabaseReadTransaction *transaction) {
-                return NSOrderedSame;
-            } view:OTRUnreadMessagesViewExtensionName];
-            if (update) {
-                [self.unreadMessagesMappings updateWithTransaction:transaction];
-            }
-        }
-    }];
+    self.accountCounter = [[OTRAccountDatabaseCount alloc] initWithDatabaseConnection:[OTRDatabaseManager sharedInstance].longLivedReadOnlyConnection delegate:self];
 }
 
 - (void) showOnboardingIfNeeded {
@@ -168,21 +113,25 @@ static CGFloat kOTRConversationCellHeight = 80.0;
         return;
     }
     __block BOOL hasAccounts = NO;
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    NSParameterAssert(OTRDatabaseManager.shared.readOnlyDatabaseConnection != nil);
+    if (!OTRDatabaseManager.shared.readOnlyDatabaseConnection) {
+        DDLogWarn(@"Database isn't setup yet! Skipping onboarding...");
+        return;
+    }
+    [OTRDatabaseManager.shared.readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         NSUInteger count = [transaction numberOfKeysInCollection:[OTRAccount collection]];
         if (count > 0) {
             hasAccounts = YES;
         }
     }];
+    
     UIStoryboard *onboardingStoryboard = [UIStoryboard storyboardWithName:@"Onboarding" bundle:[OTRAssets resourcesBundle]];
 
     //If there is any number of accounts launch into default conversation view otherwise onboarding time
     if (!hasAccounts) {
         UINavigationController *welcomeNavController = [onboardingStoryboard instantiateInitialViewController];
-        OTRWelcomeViewController *welcomeViewController = welcomeNavController.viewControllers[0];
-        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:welcomeViewController];
-        nav.modalPresentationStyle = UIModalPresentationFormSheet;
-        [self presentViewController:nav animated:YES completion:nil];
+        welcomeNavController.modalPresentationStyle = UIModalPresentationFormSheet;
+        [self presentViewController:welcomeNavController animated:YES completion:nil];
         self.hasPresentedOnboarding = YES;
     } else if ([PushController getPushPreference] == PushPreferenceUndefined) {
         EnablePushViewController *pushVC = [onboardingStoryboard instantiateViewControllerWithIdentifier:@"enablePush"];
@@ -192,6 +141,30 @@ static CGFloat kOTRConversationCellHeight = 80.0;
         }
         self.hasPresentedOnboarding = YES;
     }
+    
+    OTRXMPPAccount *needsMigration = [self checkIfNeedsMigration];
+    if (needsMigration != nil) {
+        // Show local notification prompt
+        OTRServerDeprecation *deprecationInfo = [OTRServerDeprecation deprecationInfoWithServer:needsMigration.bareJID.domain];
+        if (deprecationInfo != nil) {
+            NSString *notificationBody = [NSString stringWithFormat:MIGRATION_NOTIFICATION_STRING(), deprecationInfo.name];
+            NSDate *now = [NSDate date];
+            if (deprecationInfo.shutdownDate != nil && [now compare:deprecationInfo.shutdownDate] == NSOrderedAscending) {
+                // Show shutdown date, in x days format
+                NSCalendar *gregorianCalendar = [[NSCalendar alloc] initWithCalendarIdentifier:NSCalendarIdentifierGregorian];
+                NSDateComponents *components = [gregorianCalendar components:NSCalendarUnitDay
+                                                                    fromDate:now
+                                                                      toDate:deprecationInfo.shutdownDate
+                                                                     options:0];
+                long days = [components day];
+                notificationBody = [NSString stringWithFormat:MIGRATION_NOTIFICATION_WITH_DATE_STRING(), days];
+            }
+
+            [[UIApplication sharedApplication] showLocalNotificationWithIdentifier:@"Migration" body:notificationBody badge:1 userInfo:[[NSDictionary alloc] initWithObjectsAndKeys:kOTRNotificationTypeNone, kOTRNotificationType, @"Migration", kOTRNotificationThreadKey, nil] recurring:YES];
+        }
+    } else {
+        [[UIApplication sharedApplication] cancelRecurringLocalNotificationWithIdentifier:@"Migration"];
+    }
 }
 
 - (void)viewWillAppear:(BOOL)animated
@@ -200,17 +173,73 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     
     [self.cellUpdateTimer invalidate];
     [self.tableView reloadData];
-    [self updateTitle];
+    [self updateInboxArchiveItems:self.navigationItem.titleView];
     self.cellUpdateTimer = [NSTimer scheduledTimerWithTimeInterval:60.0 target:self selector:@selector(updateVisibleCells:) userInfo:nil repeats:YES];
     
-    if([OTRProtocolManager sharedInstance].numberOfConnectedProtocols){
-        [self enableComposeButton];
-    }
-    else {
-        [self disableComposeButton];
-    }
     
-    
+    [self updateComposeButton:self.accountCounter.numberOfAccounts];
+    [self showMigrationViewIfNeeded];
+}
+
+- (OTRXMPPAccount *)checkIfNeedsMigration {
+    __block OTRXMPPAccount *needsMigration;
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+        NSArray<OTRAccount*> *accounts = [OTRAccount allAccountsWithTransaction:transaction];
+        [accounts enumerateObjectsUsingBlock:^(OTRAccount * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+            if (![obj isKindOfClass:[OTRXMPPAccount class]]) {
+                return;
+            }
+            OTRXMPPAccount *xmppAccount = (OTRXMPPAccount *)obj;
+            if ([xmppAccount needsMigration]) {
+                needsMigration = xmppAccount;
+                *stop = YES;
+            }
+        }];
+    }];
+    return needsMigration;
+}
+
+- (void)showMigrationViewIfNeeded {
+    OTRXMPPAccount *needsMigration = [self checkIfNeedsMigration];
+    if (needsMigration != nil) {
+        self.migrationInfoHeaderView = [self createMigrationHeaderView:needsMigration];
+        self.tableView.tableHeaderView = self.migrationInfoHeaderView;
+    } else if (self.migrationInfoHeaderView != nil) {
+        self.migrationInfoHeaderView = nil;
+        self.tableView.tableHeaderView = nil;
+    }
+}
+
+- (void) showDonationPrompt {
+    if (!OTRBranding.allowsDonation ||
+        self.hasPresentedOnboarding ||
+        TransactionObserver.hasValidReceipt) {
+        return;
+    }
+    NSDate *ignoreDate = [NSUserDefaults.standardUserDefaults objectForKey:kOTRIgnoreDonationDateKey];
+    BOOL dateCheck = NO;
+    if (!ignoreDate) {
+        dateCheck = YES;
+    } else {
+        NSTimeInterval lastIgnored = [[NSDate date] timeIntervalSinceDate:ignoreDate];
+        NSTimeInterval twoWeeks = 60 * 60 * 24 * 14;
+        if (lastIgnored > twoWeeks) {
+            dateCheck = YES;
+        }
+    }
+    if (!dateCheck) {
+        return;
+    }
+    NSString *title = [NSString stringWithFormat:@"❤️ %@", DONATE_STRING()];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:DID_YOU_KNOW_DONATION_STRING() preferredStyle:UIAlertControllerStyleAlert];
+    UIAlertAction *donate = [UIAlertAction actionWithTitle:DONATE_STRING() style:UIAlertActionStyleCancel handler:^(UIAlertAction * _Nonnull action) {
+        [PurchaseViewController showFrom:self];
+    }];
+    UIAlertAction *cancel = [UIAlertAction actionWithTitle:MAYBE_LATER_STRING() style:UIAlertActionStyleDefault handler:nil];
+    [alert addAction:donate];
+    [alert addAction:cancel];
+    [self presentViewController:alert animated:YES completion:nil];
+    [NSUserDefaults.standardUserDefaults setObject:NSDate.date forKey:kOTRIgnoreDonationDateKey];
 }
 
 - (void)viewDidAppear:(BOOL)animated
@@ -218,7 +247,10 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     [super viewDidAppear:animated];
     
     [self showOnboardingIfNeeded];
+    [self showDonationPrompt];
 }
+         
+
 
 - (void)viewWillDisappear:(BOOL)animated
 {
@@ -227,9 +259,38 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     self.cellUpdateTimer = nil;
 }
 
+- (void)inboxArchiveControlValueChanged:(id)sender {
+    if (![sender isKindOfClass:[UISegmentedControl class]]) {
+        return;
+    }
+    UISegmentedControl *segment = sender;
+    BOOL showArchived = NO;
+    if (segment.selectedSegmentIndex == 0) {
+        showArchived = NO;
+    } else if (segment.selectedSegmentIndex == 1) {
+        showArchived = YES;
+    }
+    [self updateInboxArchiveFilteringAndShowArchived:showArchived];
+}
+
+- (void) updateInboxArchiveFilteringAndShowArchived:(BOOL)showArchived {
+    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+        YapDatabaseFilteredViewTransaction *fvt = [transaction ext:OTRFilteredConversationsName];
+        YapDatabaseViewFiltering *filtering = [YapDatabaseViewFiltering withObjectBlock:^BOOL(YapDatabaseReadTransaction * _Nonnull transaction, NSString * _Nonnull group, NSString * _Nonnull collection, NSString * _Nonnull key, id  _Nonnull object) {
+            if ([object conformsToProtocol:@protocol(OTRThreadOwner)]) {
+                id<OTRThreadOwner> threadOwner = object;
+                BOOL isArchived = threadOwner.isArchived;
+                return showArchived == isArchived;
+            }
+            return !showArchived; // Don't show presence requests in Archive
+        }];
+        [fvt setFiltering:filtering versionTag:[NSUUID UUID].UUIDString];
+    }];
+}
+
 - (void)settingsButtonPressed:(id)sender
 {
-    OTRSettingsViewController * settingsViewController = [[OTRSettingsViewController alloc] init];
+    UIViewController * settingsViewController = [[OTRAppDelegate appDelegate].theme settingsViewController];
     
     [self.navigationController pushViewController:settingsViewController animated:YES];
 }
@@ -255,14 +316,7 @@ static CGFloat kOTRConversationCellHeight = 80.0;
 }
 
 - (id) objectAtIndexPath:(NSIndexPath*)indexPath {
-    __block id object = nil;
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
-        YapDatabaseViewTransaction *ext = [transaction ext:OTRConversationDatabaseViewExtensionName];
-        NSParameterAssert(ext != nil);
-        object = [ext objectAtIndexPath:indexPath withMappings:self.mappings];
-        NSParameterAssert(object != nil);
-    }];
-    return object;
+    return [self.conversationListViewHandler object:indexPath];
 }
 
 - (id <OTRThreadOwner>)threadForIndexPath:(NSIndexPath *)indexPath
@@ -286,28 +340,49 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     return thread;
 }
 
-- (void)enableComposeButton
+- (void)updateComposeButton:(NSUInteger)numberOfaccounts
 {
-    self.composeBarButtonItem.enabled = YES;
+    self.composeBarButtonItem.enabled = numberOfaccounts > 0;
 }
 
-- (void)disableComposeButton
+- (void)updateInboxArchiveItems:(UIView*)sender
 {
-    self.composeBarButtonItem.enabled = NO;
-}
-
-- (void)updateTitle
-{
-    NSUInteger numberUnreadMessages = [self.unreadMessagesMappings numberOfItemsInAllGroups];
+//    if (![sender isKindOfClass:[UISegmentedControl class]]) {
+//        return;
+//    }
+//    UISegmentedControl *control = sender;
+    // We can't accurately calculate the unread messages for inbox vs archived
+    // This will require a massive reindexing of all messages which should be avoided until db performance is improved
+    
+    /*
+    __block NSUInteger numberUnreadMessages = 0;
+    [self.conversationListViewHandler.databaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        numberUnreadMessages = [transaction numberOfUnreadMessages];
+    }];
     if (numberUnreadMessages > 99) {
-        self.title = [NSString stringWithFormat:@"%@ (99+)",CHATS_STRING];
+        NSString *title = [NSString stringWithFormat:@"%@ (99+)",CHATS_STRING()];
     }
     else if (numberUnreadMessages > 0)
     {
-        self.title = [NSString stringWithFormat:@"%@ (%d)",CHATS_STRING,(int)numberUnreadMessages];
+        NSString *title = [NSString stringWithFormat:@"%@ (%d)",CHATS_STRING(),(int)numberUnreadMessages];
     }
     else {
-        self.title = CHATS_STRING;
+        self.title = CHATS_STRING();
+    }
+     */
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    if (self.migrationInfoHeaderView != nil) {
+        UIView *headerView = self.migrationInfoHeaderView;
+        [headerView setNeedsLayout];
+        [headerView layoutIfNeeded];
+        int height = [headerView systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].height;
+        CGRect frame = headerView.frame;
+        frame.size.height = height + 1;
+        headerView.frame = frame;
+        self.tableView.tableHeaderView = headerView;
     }
 }
 
@@ -316,74 +391,61 @@ static CGFloat kOTRConversationCellHeight = 80.0;
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
 {
-    return [self.mappings numberOfSections];
+    return [self.conversationListViewHandler.mappings numberOfSections];
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
-    return [self.mappings numberOfItemsInSection:section];
+    return [self.conversationListViewHandler.mappings numberOfItemsInSection:section];
 }
-
-- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    //Delete conversation
-    if(editingStyle == UITableViewCellEditingStyleDelete) {
-        id <OTRThreadOwner> thread = [self threadForIndexPath:indexPath];
-        
-        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-            [OTRMessage deleteAllMessagesForBuddyId:[thread threadIdentifier] transaction:transaction];
-        }];
-        
-        if ([thread isKindOfClass:[OTRXMPPRoom class]]) {
-            
-            //Leave room
-            NSString *accountKey = [thread threadAccountIdentifier];
-            __block OTRAccount *account = nil;
-            [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
-                account = [OTRAccount fetchObjectWithUniqueID:accountKey transaction:transaction];
-            }];
-            OTRXMPPManager *xmppManager = (OTRXMPPManager *)[[OTRProtocolManager sharedInstance] protocolForAccount:account];
-            XMPPJID *jid = [XMPPJID jidWithString:((OTRXMPPRoom *)thread).jid];
-            [xmppManager.roomManager leaveRoom:jid];
-            
-            //Delete database items
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                [((OTRXMPPRoom *)thread) removeWithTransaction:transaction];
-            }];
-        }
-    }
-    
-}
+//
+//- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath
+//{
+//    //Delete conversation
+//    if(editingStyle == UITableViewCellEditingStyleDelete) {
+//        
+//    }
+//    
+//}
 
 - (void) handleSubscriptionRequest:(OTRXMPPPresenceSubscriptionRequest*)request approved:(BOOL)approved {
     __block OTRXMPPAccount *account = nil;
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+    [self.conversationListViewHandler.databaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
         account = [request accountWithTransaction:transaction];
     }];
     OTRXMPPManager *manager = (OTRXMPPManager*)[[OTRProtocolManager sharedInstance] protocolForAccount:account];
     XMPPJID *jid = [XMPPJID jidWithString:request.jid];
     if (approved) {
         // Create new buddy in database so it can be shown immediately in list
+        __block OTRXMPPBuddy *buddy = nil;
         [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-            OTRXMPPBuddy *buddy = [OTRXMPPBuddy fetchBuddyWithUsername:request.jid withAccountUniqueId:account.uniqueId transaction:transaction];
+            buddy = [OTRXMPPBuddy fetchBuddyWithUsername:request.jid withAccountUniqueId:account.uniqueId transaction:transaction];
             if (!buddy) {
                 buddy = [[OTRXMPPBuddy alloc] init];
                 buddy.username = request.jid;
                 buddy.accountUniqueId = account.uniqueId;
                 // hack to show buddy in conversations view
-                buddy.lastMessageDate = [NSDate date];
+                buddy.lastMessageId = @"";
             }
             buddy.displayName = request.jid;
+            buddy.pendingApproval = YES;
             [buddy saveWithTransaction:transaction];
         }];
         [manager.xmppRoster acceptPresenceSubscriptionRequestFrom:jid andAddToRoster:YES];
-        
+        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+            [request removeWithTransaction:transaction];
+            if (buddy != nil && [self.delegate respondsToSelector:@selector(conversationViewController:didSelectThread:)]) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.delegate conversationViewController:self didSelectThread:buddy];
+                });
+            }
+        }];
     } else {
         [manager.xmppRoster rejectPresenceSubscriptionRequestFrom:jid];
+        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+            [request removeWithTransaction:transaction];
+        }];
     }
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-        [request removeWithTransaction:transaction];
-    }];
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -402,11 +464,6 @@ static CGFloat kOTRConversationCellHeight = 80.0;
             }
         }];
         cell = approvalCell;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        
-    } else if ([thread isKindOfClass:[OTRXMPPBuddy class]] &&
-               ((OTRXMPPBuddy*)thread).pendingApproval) {
-        cell = [tableView dequeueReusableCellWithIdentifier:[OTRBuddyInfoCell reuseIdentifier] forIndexPath:indexPath];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     } else {
         cell = [tableView dequeueReusableCellWithIdentifier:[OTRConversationCell reuseIdentifier] forIndexPath:indexPath];
@@ -431,19 +488,23 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     return kOTRConversationCellHeight;
 }
 
-- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath
-{
-    return UITableViewCellEditingStyleDelete;
+//- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath
+//{
+//    return UITableViewCellEditingStyleDelete;
+//}
+
+- (nullable NSArray<UITableViewRowAction *> *)tableView:(UITableView *)tableView editActionsForRowAtIndexPath:(NSIndexPath *)indexPath  {
+    id <OTRThreadOwner> thread = [self threadForIndexPath:indexPath];
+    return [UITableView editActionsForThread:thread deleteActionAlsoRemovesFromRoster:NO connection:OTRDatabaseManager.shared.readWriteDatabaseConnection];
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     id <OTRThreadOwner> thread = [self threadForIndexPath:indexPath];
     
-    // Bail out if it's a subscription request or pending approval
+    // Bail out if it's a subscription request
     if ([thread isKindOfClass:[OTRXMPPBuddy class]] &&
-        (((OTRXMPPBuddy*)thread).hasIncomingSubscriptionRequest ||
-        ((OTRXMPPBuddy*)thread).isPendingApproval)) {
+        ((OTRXMPPBuddy*)thread).hasIncomingSubscriptionRequest) {
         return;
     }
 
@@ -452,60 +513,27 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     }
 }
 
+#pragma - mark OTRAccountDatabaseCountDelegate method
+
+- (void)accountCountChanged:(OTRAccountDatabaseCount *)counter {
+    [self updateComposeButton:counter.numberOfAccounts];
+}
+
 #pragma - mark YapDatabse Methods
 
-- (void)yapDatabaseModified:(NSNotification *)notification
+- (void)didSetupMappings:(OTRYapViewHandler *)handler
 {
-    NSArray *notifications = [self.databaseConnection beginLongLivedReadTransaction];
-    
-    NSArray *sectionChanges = nil;
-    NSArray *rowChanges = nil;
-    
-    YapDatabaseViewConnection *conversationExt = [self.databaseConnection ext:OTRConversationDatabaseViewExtensionName];
-    if (conversationExt) {
-        if (!self.mappings) {
-            [self setupMappings:YES];
-            [self.tableView reloadData];
-        } else {
-            [conversationExt getSectionChanges:&sectionChanges
-                                    rowChanges:&rowChanges
-                              forNotifications:notifications
-                                  withMappings:self.mappings];
-        }
-    }
-    
-    NSArray *unreadMessagesSectionChanges = nil;
-    NSArray *unreadMessagesRowChanges = nil;
-    
-    YapDatabaseViewConnection *unreadExt = [self.databaseConnection ext:OTRUnreadMessagesViewExtensionName];
-    if (unreadExt) {
-        if (!self.unreadMessagesMappings) {
-            [self setupUnreadMappings:YES];
-            [self updateTitle];
-        } else {
-            [unreadExt getSectionChanges:&unreadMessagesSectionChanges
-                              rowChanges:&unreadMessagesRowChanges
-                        forNotifications:notifications
-                            withMappings:self.unreadMessagesMappings];
-        }
-        
-    }
-    
-    if ([unreadMessagesSectionChanges count] || [unreadMessagesRowChanges count]) {
-        [self updateTitle];
-    }
-    
-    // No need to update mappings.
-    // The above method did it automatically.
-    
-    if ([sectionChanges count] == 0 && [rowChanges count] == 0)
-    {
-        // Nothing has changed that affects our tableView
+    [self.tableView reloadData];
+    [self updateInboxArchiveItems:self.navigationItem.titleView];
+}
+
+- (void)didReceiveChanges:(OTRYapViewHandler *)handler sectionChanges:(NSArray<YapDatabaseViewSectionChange *> *)sectionChanges rowChanges:(NSArray<YapDatabaseViewRowChange *> *)rowChanges
+{
+    if ([rowChanges count] == 0 && sectionChanges == 0) {
         return;
     }
     
-    // Familiar with NSFetchedResultsController?
-    // Then this should look pretty familiar
+    [self updateInboxArchiveItems:self.navigationItem.titleView];
     
     [self.tableView beginUpdates];
     
@@ -566,4 +594,39 @@ static CGFloat kOTRConversationCellHeight = 80.0;
     
     [self.tableView endUpdates];
 }
+
+#pragma - mark Account Migration Methods
+
+- (MigrationInfoHeaderView *)createMigrationHeaderView:(OTRXMPPAccount *)account
+{
+    OTRServerDeprecation *deprecationInfo = [OTRServerDeprecation deprecationInfoWithServer:account.bareJID.domain];
+    if (deprecationInfo == nil) {
+        return nil; // Should not happen if we got here already
+    }
+    UINib *nib = [UINib nibWithNibName:@"MigrationInfoHeaderView" bundle:OTRAssets.resourcesBundle];
+    MigrationInfoHeaderView *header = (MigrationInfoHeaderView*)[nib instantiateWithOwner:self options:nil][0];
+    [header.titleLabel setText:MIGRATION_STRING()];
+    if (deprecationInfo.shutdownDate != nil && [[NSDate date] compare:deprecationInfo.shutdownDate] == NSOrderedAscending) {
+        // Show shutdown date
+        [header.descriptionLabel setText:[NSString stringWithFormat:MIGRATION_INFO_WITH_DATE_STRING(), deprecationInfo.name, [NSDateFormatter localizedStringFromDate:deprecationInfo.shutdownDate dateStyle:NSDateFormatterShortStyle timeStyle:NSDateFormatterNoStyle]]];
+    } else {
+        // No shutdown date or already passed
+        [header.descriptionLabel setText:[NSString stringWithFormat:MIGRATION_INFO_STRING(), deprecationInfo.name]];
+    }
+    [header.startButton setTitle:MIGRATION_START_STRING() forState:UIControlStateNormal];
+    [header setAccount:account];
+    return header;
+}
+
+- (IBAction)didPressStartMigrationButton:(id)sender {
+    if (self.migrationInfoHeaderView != nil) {
+        OTRXMPPAccount *oldAccount = self.migrationInfoHeaderView.account;
+        OTRAccountMigrationViewController *migrateVC = [[OTRAccountMigrationViewController alloc] initWithOldAccount:oldAccount];
+        migrateVC.showsCancelButton = YES;
+        migrateVC.modalPresentationStyle = UIModalPresentationFormSheet;
+        UINavigationController *navigationController = [[UINavigationController alloc] initWithRootViewController:migrateVC];
+        [self presentViewController:navigationController animated:YES completion:nil];
+    }
+}
+
 @end

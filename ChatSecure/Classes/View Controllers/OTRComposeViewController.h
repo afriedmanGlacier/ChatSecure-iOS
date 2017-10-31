@@ -6,12 +6,14 @@
 //  Copyright (c) 2014 Chris Ballinger. All rights reserved.
 //
 
-#import <UIKit/UIKit.h>
+@import UIKit;
+@import YapDatabase;
 
 @class OTRBuddy;
 @class OTRComposeViewController;
 @class OTRAccount;
 
+NS_ASSUME_NONNULL_BEGIN
 @protocol OTRComposeViewControllerDelegate <NSObject>
 
 @required
@@ -37,11 +39,15 @@
 */
 @property (nonatomic, readonly) BOOL selectionModeIsSingle;
 
-- (void)addBuddy:(nullable NSArray <OTRAccount *>*)accountsAbleToAddBuddies;
+- (void)addBuddy:(NSArray <OTRAccount *>*)accountsAbleToAddBuddies;
 
 /**
  * This changes the selection mode therefore changing the behevour of selecting a buddy and the right navigation bar button item.
  */
 - (void)switchSelectionMode;
 
+/** If user has more than one account, more information needs to be shown to distinguish contacts from each account. By default will show account if numAccounts > 0*/
+- (BOOL) shouldShowAccountLabelWithTransaction:(YapDatabaseReadTransaction*)transaction;
+
 @end
+NS_ASSUME_NONNULL_END

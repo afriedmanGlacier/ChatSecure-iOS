@@ -8,14 +8,14 @@
 
 #import "OTRAddBuddyQRCodeViewController.h"
 @import OTRAssets;
-#import "PureLayout.h"
+@import PureLayout;
 #import "OTRQRCodeReaderDelegate.h"
 #import "OTRQRCodeViewController.h"
-#import "XMPPURI.h"
+@import XMPPFramework;
 #import "OTRAccount.h"
 #import "OTRDatabaseManager.h"
 #import "NSURL+ChatSecure.h"
-#import "OTRLanguageManager.h"
+
 
 @interface OTRAddBuddyQRCodeViewController ()
 
@@ -28,7 +28,7 @@
 
 - (instancetype)initWithAccount:(OTRAccount *)account completion:(void (^)(void))completion
 {
-    if(self = [super initWithCancelButtonTitle:CANCEL_STRING]){
+    if(self = [super initWithCancelButtonTitle:CANCEL_STRING()]){
         self.account = account;
         self.qrCodeDelegate = [[OTRQRCodeReaderDelegate alloc] initWithAccount:account];
         self.qrCodeDelegate.completion = completion;
@@ -43,7 +43,7 @@
     
     UIButton *showOwnQRCodeButton = [UIButton buttonWithType:UIButtonTypeCustom];
     showOwnQRCodeButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [showOwnQRCodeButton setTitle:NSLocalizedString(@"My Code", @"Your QR code") forState:UIControlStateNormal];
+    [showOwnQRCodeButton setTitle:MY_QR_CODE() forState:UIControlStateNormal];
     [showOwnQRCodeButton setTitleColor:[UIColor grayColor] forState:UIControlStateHighlighted];
     [showOwnQRCodeButton addTarget:self action:@selector(showOwnQRCode:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:showOwnQRCodeButton];

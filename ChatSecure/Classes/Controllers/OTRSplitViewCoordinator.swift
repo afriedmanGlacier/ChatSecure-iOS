@@ -8,131 +8,93 @@
 
 import Foundation
 
-public class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDelegate, OTRComposeViewControllerDelegate {
+open class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDelegate, OTRComposeViewControllerDelegate {
     
-    public weak var splitViewController:UISplitViewController? = nil
+    @objc open weak var splitViewController:UISplitViewController? = nil
     let databaseConnection:YapDatabaseConnection
     
-    public init(databaseConnection:YapDatabaseConnection) {
+    @objc public init(databaseConnection:YapDatabaseConnection) {
         self.databaseConnection = databaseConnection
     }
     
-    public func enterConversationWithBuddies(buddyKeys:[String], accountKey:String, name:String?) {
+    open func enterConversationWithBuddies(_ buddyKeys:[String], accountKey:String, name:String?) {
         guard let splitVC = self.splitViewController else {
             return
         }
         
-        if let appDelegate = UIApplication.sharedApplication().delegate as? OTRAppDelegate {
-            if let c = appDelegate.theme.groupMessagesViewControllerClass() as? OTRMessagesGroupViewController.Type {
-                let messagesVC = c.init()
-                messagesVC.setupWithBuddies(buddyKeys, accountId: accountKey, name:name)
-                //setup 'back' button in nav bar
-                let navigationController = UINavigationController(rootViewController: messagesVC)
-                navigationController.topViewController!.navigationItem.leftBarButtonItem = splitVC.displayModeButtonItem();
-                navigationController.topViewController!.navigationItem.leftItemsSupplementBackButton = true;
-                splitVC.showDetailViewController(navigationController, sender: nil)
-            }
+        if let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate, let messagesVC = appDelegate.theme.messagesViewController() as? OTRMessagesViewController {
+            messagesVC.setup(withBuddies: buddyKeys, accountId: accountKey, name:name)
+            //setup 'back' button in nav bar
+            let navigationController = UINavigationController(rootViewController: messagesVC)
+            navigationController.topViewController!.navigationItem.leftBarButtonItem = splitVC.displayModeButtonItem;
+            navigationController.topViewController!.navigationItem.leftItemsSupplementBackButton = true;
+            splitVC.showDetailViewController(navigationController, sender: nil)
         }
     }
     
-    public func enterConversationWithBuddy(buddyKey:String) {
+    open func enterConversationWithBuddy(_ buddyKey:String) {
         var buddy:OTRThreadOwner? = nil
-        self.databaseConnection.readWithBlock { (transaction) -> Void in
-            buddy = OTRBuddy.fetchObjectWithUniqueID(buddyKey, transaction: transaction)
+        self.databaseConnection.read { (transaction) -> Void in
+            buddy = OTRBuddy.fetchObject(withUniqueID: buddyKey, transaction: transaction)
         }
         if let b = buddy {
-            OTRProtocolManager.sharedInstance().encryptionManager.maybeRefreshOTRSessionForBuddyKey(b.threadIdentifier(), collection: b.threadCollection())
             self.enterConversationWithThread(b, sender: nil)
         }
     }
     
-    public func enterConversationWithThread(threadOwner:OTRThreadOwner, sender:AnyObject?) {
+    @objc open func enterConversationWithThread(_ threadOwner:OTRThreadOwner, sender:AnyObject?) {
         guard let splitVC = self.splitViewController else {
             return
         }
         
-        let appDelegate = UIApplication.sharedApplication().delegate as? OTRAppDelegate
+        let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate
         
-        var messagesViewController:OTRMessagesViewController? = appDelegate?.messagesViewController
-        
-        // 1. If it is a hold-to-talk now but should be a group thread the create group thread. Else if is group
-        if let _  = messagesViewController as? OTRMessagesHoldTalkViewController where threadOwner.isGroupThread() {
-            if let c = appDelegate?.theme.groupMessagesViewControllerClass() as? OTRMessagesGroupViewController.Type {
-                messagesViewController = c.init()
-            }
-        } else if let _ = messagesViewController as? OTRMessagesGroupViewController where !threadOwner.isGroupThread() {
-            if let c = appDelegate?.theme.messagesViewControllerClass() as? OTRMessagesViewController.Type {
-                messagesViewController = c.init()
-            }
-        }
-        
-        
-        guard let mVC = messagesViewController, navController = appDelegate?.messagesNavigationController else {
+        let messagesViewController:OTRMessagesViewController? = appDelegate?.messagesViewController
+        guard let mVC = messagesViewController else {
             return
         }
         
-        OTRProtocolManager.sharedInstance().encryptionManager.maybeRefreshOTRSessionForBuddyKey(threadOwner.threadIdentifier(), collection: threadOwner.threadCollection())
+        OTRProtocolManager.sharedInstance().encryptionManager.maybeRefreshOTRSession(forBuddyKey: threadOwner.threadIdentifier, collection: threadOwner.threadCollection)
         
         //Set nav controller root view controller to mVC and then show detail with nav controller
         
-        mVC.setThreadKey(threadOwner.threadIdentifier(), collection: threadOwner.threadCollection())
+        mVC.setThreadKey(threadOwner.threadIdentifier, collection: threadOwner.threadCollection)
         
-        if (!navController.viewControllers.contains(mVC)) {
-            navController.setViewControllers([mVC], animated: true)
-        }
-        
-        
-        navController.topViewController!.navigationItem.leftBarButtonItem = splitVC.displayModeButtonItem();
-        navController.topViewController!.navigationItem.leftItemsSupplementBackButton = true;
-        
-        guard let viewControllers = self.splitViewController?.viewControllers  else {
-            return
-        }
-        
-        //Should we dismiss other views that may be on top of the splitviewcontroller? How?
-        
-        //This ensures if in actual split view side by side won't push duplicate nav controller
-        if (viewControllers.contains(navController)) {
-            return
+        //iPad check where there are two navigation controllers and we want the second one
+        if splitVC.viewControllers.count > 1 && ((splitVC.viewControllers[1] as? UINavigationController)?.viewControllers.contains(mVC)) ?? false {
+        } else if splitVC.viewControllers.count == 1 && ((splitVC.viewControllers.first as? UINavigationController)?.viewControllers.contains(mVC)) ?? false {
         } else {
-            //This works for normal pushing on to like iphone 4,5,6
-            if let otherViewControllers = viewControllers.first?.childViewControllers {
-                if otherViewControllers.contains(navController) {
-                    return
-                }
-            }
+            splitVC.showDetailViewController(mVC, sender: sender)
         }
-        
-        splitVC.showDetailViewController(navController, sender: sender)
     }
     
     //MARK: OTRConversationViewControllerDelegate Methods
-    public func conversationViewController(conversationViewController: OTRConversationViewController!, didSelectThread threadOwner: OTRThreadOwner!) {
+    public func conversationViewController(_ conversationViewController: OTRConversationViewController!, didSelectThread threadOwner: OTRThreadOwner!) {
         self.enterConversationWithThread(threadOwner, sender: conversationViewController)
     }
     
-    public func conversationViewController(conversationViewController: OTRConversationViewController!, didSelectCompose sender: AnyObject!) {
-        
-        let appDelegate = UIApplication.sharedApplication().delegate as? OTRAppDelegate
-        var composeViewController:OTRComposeViewController? = nil
-        if let c = appDelegate?.theme.composeViewControllerClass() as? OTRComposeViewController.Type {
-            composeViewController = c.init()
+    public func conversationViewController(_ conversationViewController: OTRConversationViewController!, didSelectCompose sender: Any!) {
+        guard let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate else {
+            return
         }
-        composeViewController!.delegate = self
-        let modalNavigationController = UINavigationController(rootViewController: composeViewController!)
-        modalNavigationController.modalPresentationStyle = .FormSheet
+        let composeViewController = appDelegate.theme.composeViewController()
+        if let composeViewController = composeViewController as? OTRComposeViewController {
+            composeViewController.delegate = self
+        }
+        let modalNavigationController = UINavigationController(rootViewController: composeViewController)
+        modalNavigationController.modalPresentationStyle = .formSheet
         
         //May need to use conversationViewController
-        self.splitViewController?.presentViewController(modalNavigationController, animated: true, completion: nil)
+        self.splitViewController?.present(modalNavigationController, animated: true, completion: nil)
     }
     
     //MARK: OTRComposeViewControllerDelegate Methods
-    public func controller(viewController: OTRComposeViewController, didSelectBuddies buddies: [String]?, accountId: String?, name: String?) {
-        self.splitViewController?.dismissViewControllerAnimated(true) { () -> Void in
-            
+    open func controller(_ viewController: OTRComposeViewController, didSelectBuddies buddies: [String]?, accountId: String?, name: String?) {
+
+        func doClose () -> Void {
             guard let buds = buddies,
-                accountKey = accountId else {
-                return
+                let accountKey = accountId else {
+                    return
             }
             
             if (buds.count == 1) {
@@ -143,10 +105,23 @@ public class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDel
                 self.enterConversationWithBuddies(buds, accountKey: accountKey, name:name)
             }
         }
+
+        
+        if (self.splitViewController?.presentedViewController == viewController.navigationController) {
+            self.splitViewController?.dismiss(animated: true) { doClose() }
+        } else {
+            doClose()
+        }
     }
     
-    public func controllerDidCancel(viewController: OTRComposeViewController) {
-        self.splitViewController?.dismissViewControllerAnimated(true, completion: nil)
+    open func controllerDidCancel(_ viewController: OTRComposeViewController) {
+        self.splitViewController?.dismiss(animated: true, completion: nil)
+    }
+    
+    @objc open func showConversationsViewController() {
+        if self.splitViewController?.presentedViewController != nil {
+            self.splitViewController?.dismiss(animated: true, completion: nil)
+        }
     }
 }
 
@@ -163,9 +138,9 @@ self.navigationItem.leftBarButtonItem = barButtonItem;
 self.navigationItem.leftBarButtonItem = nil;
 }
 */
-public class OTRSplitViewControllerDelegateObject: NSObject, UISplitViewControllerDelegate {
+open class OTRSplitViewControllerDelegateObject: NSObject, UISplitViewControllerDelegate {
     
-    public func splitViewController(splitViewController: UISplitViewController, collapseSecondaryViewController secondaryViewController: UIViewController, ontoPrimaryViewController primaryViewController: UIViewController) -> Bool {
+    open func splitViewController(_ splitViewController: UISplitViewController, collapseSecondary secondaryViewController: UIViewController, onto primaryViewController: UIViewController) -> Bool {
         
         return true
     }

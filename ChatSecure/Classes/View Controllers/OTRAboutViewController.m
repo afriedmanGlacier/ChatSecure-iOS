@@ -23,16 +23,17 @@
 #import "OTRAboutViewController.h"
 #import "OTRConstants.h"
 #import "OTRAppDelegate.h"
-#import "PureLayout.h"
-#import "TTTAttributedLabel.h"
+@import PureLayout;
+@import TTTAttributedLabel;
 #import "OTRSocialButtonsView.h"
 #import "OTRAcknowledgementsViewController.h"
-#import "NSURL+chatsecure.h"
+#import "NSURL+ChatSecure.h"
 #import "OTRUtilities.h"
 #import "UIActionSheet+ChatSecure.h"
 #import "UIActivityViewController+ChatSecure.h"
 @import OTRAssets;
-#import "OTRLanguageManager.h"
+@import XLForm;
+
 
 static NSString *const kDefaultCellReuseIdentifier = @"kDefaultCellReuseIdentifier";
 
@@ -63,7 +64,7 @@ static NSString *const kDefaultCellReuseIdentifier = @"kDefaultCellReuseIdentifi
 
 - (id)init {
     if (self = [super init]) {
-        self.title = ABOUT_STRING;
+        self.title = ABOUT_STRING();
         self.hasAddedConstraints = NO;
     }
     return self;
@@ -74,7 +75,7 @@ static NSString *const kDefaultCellReuseIdentifier = @"kDefaultCellReuseIdentifi
 - (void) setupVersionLabel {
     self.versionLabel = [[UILabel alloc] init];
     NSString *version = [[[NSBundle mainBundle] infoDictionary] valueForKey:@"CFBundleShortVersionString"];
-    self.versionLabel.text = [NSString stringWithFormat:@"%@ %@", VERSION_STRING, version];
+    self.versionLabel.text = [NSString stringWithFormat:@"%@ %@", VERSION_STRING(), version];
     self.versionLabel.textAlignment = NSTextAlignmentCenter;
     self.versionLabel.frame = CGRectMake(0, 0, self.view.frame.size.width, 30);
 }
@@ -99,7 +100,7 @@ static NSString *const kDefaultCellReuseIdentifier = @"kDefaultCellReuseIdentifi
     NSURL *chrisballingerURL = [NSURL URLWithString:@"https://github.com/chrisballinger"];
     NSString *davidchilesString = @"@davidchiles";
     NSURL *davidChilesURL = [NSURL URLWithString:@"https://github.com/davidchiles"];
-    NSString *headerText = [NSString stringWithFormat:@"%@ %@ & %@.", CREATED_BY_STRING, chrisballingerString, davidchilesString];
+    NSString *headerText = [NSString stringWithFormat:@"%@ %@ & %@.", CREATED_BY_STRING(), chrisballingerString, davidchilesString];
     NSRange chrisRange = [headerText rangeOfString:chrisballingerString];
     NSRange davidRange = [headerText rangeOfString:davidchilesString];
     
@@ -160,8 +161,8 @@ static NSString *const kDefaultCellReuseIdentifier = @"kDefaultCellReuseIdentifi
         self.edgesForExtendedLayout = UIRectEdgeNone;
         [self.navigationController.view setBackgroundColor:[UIColor whiteColor]];
     }
-    OTRAboutTableCellData *translateData = [OTRAboutTableCellData cellDataWithTitle:HELP_TRANSLATE_STRING url:[NSURL otr_transifexURL]];
-    OTRAboutTableCellData *aboutThisVersion = [OTRAboutTableCellData cellDataWithTitle:ABOUT_VERSION_STRING url:nil];
+    OTRAboutTableCellData *translateData = [OTRAboutTableCellData cellDataWithTitle:HELP_TRANSLATE_STRING() url:[NSURL otr_transifexURL]];
+    OTRAboutTableCellData *aboutThisVersion = [OTRAboutTableCellData cellDataWithTitle:ABOUT_VERSION_STRING() url:nil];
     self.cellData = @[aboutThisVersion,translateData];
     self.view.backgroundColor = [UIColor whiteColor];
     

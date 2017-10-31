@@ -8,10 +8,12 @@
 
 #import "OTRUtilities.h"
 #import "OTRBuddy.h"
-#import "OTRMessage.h"
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
 #import "OTRAccount.h"
 #import "OTRDatabaseManager.h"
-#import <Security/SecureTransport.h>
+@import Security;
+@import XLForm;
 
 #import "OTRLog.h"
 
@@ -74,7 +76,7 @@
 {
     [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         [transaction removeAllObjectsInCollection:[OTRBuddy collection]];
-        [transaction removeAllObjectsInCollection:[OTRMessage collection]];
+        [transaction removeAllObjectsInCollection:[OTRBaseMessage collection]];
     }];
 }
 

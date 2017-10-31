@@ -8,9 +8,9 @@
 
 #import "OTRXMPPBuddyManager.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
-#import <XMPPFramework/XMPPStream.h>
+@import XMPPFramework;
 #import "OTRXMPPBuddy.h"
-@import YapDatabase.YapDatabaseView;
+@import YapDatabase;
 
 @interface OTRXMPPBuddyManager () <OTRYapViewHandlerDelegateProtocol>
 
@@ -28,7 +28,7 @@
 - (BOOL)activate:(XMPPStream *)aXmppStream
 {
     NSString *accountKey = aXmppStream.tag;
-    self.viewHandler = [[OTRYapViewHandler alloc] initWithDatabaseConnection:self.databaseConnection];
+    self.viewHandler = [[OTRYapViewHandler alloc] initWithDatabaseConnection:self.databaseConnection databaseChangeNotificationName:[DatabaseNotificationName LongLivedTransactionChanges]];
     self.viewHandler.delegate = self;
     NSArray *groups = @[accountKey];
     NSString *viewName = [YapDatabaseConstants extensionName:DatabaseExtensionNameBuddyDeleteActionViewName];

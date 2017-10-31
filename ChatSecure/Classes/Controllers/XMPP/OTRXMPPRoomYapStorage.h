@@ -6,16 +6,21 @@
 //  Copyright © 2015 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
-#import "XMPPRoom.h"
-#import "YapDatabaseConnection.h"
-#import "OTRMessage.h"
+@import Foundation;
+@import XMPPFramework;
+@import YapDatabase;
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
+
+@class OTRXMPPRoomOccupant;
 
 @interface OTRXMPPRoomYapStorage : NSObject <XMPPRoomStorage>
 
 @property (nonatomic, strong) YapDatabaseConnection *databaseConnection;
 
 - (instancetype)initWithDatabaseConnection:(YapDatabaseConnection *)databaseConnection;
+
+- (OTRXMPPRoomOccupant *)roomOccupantForJID:(NSString *)jid realJID:(NSString *)realJID roomJID:(NSString *)roomJID accountId:(NSString *)accountId inTransaction:(YapDatabaseReadTransaction *)transaction alwaysReturnObject:(BOOL)alwaysReturnObject;
 
 - (id <OTRMessageProtocol>)lastMessageInRoom:(XMPPRoom *)room accountKey:(NSString *)accountKey;
 @end

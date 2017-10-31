@@ -6,9 +6,8 @@
 //  Copyright (c) 2014 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
-
-#import "XMPPRoster.h"
+@import Foundation;
+@import XMPPFramework;
 
 @interface OTRYapDatabaseRosterStorage : NSObject <XMPPRosterStorage>
 

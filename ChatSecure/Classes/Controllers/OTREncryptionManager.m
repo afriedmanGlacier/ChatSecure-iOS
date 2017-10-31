@@ -21,7 +21,8 @@
 //  along with ChatSecure.  If not, see <http://www.gnu.org/licenses/>.
 
 #import "OTREncryptionManager.h"
-#import "OTRMessage.h"
+#import "OTRIncomingMessage.h"
+#import "OTROutgoingMessage.h"
 #import "OTRBuddy.h"
 #import "OTRAccount.h"
 #import "OTRProtocolManager.h"
@@ -36,10 +37,11 @@
 #import "OTRVideoItem.h"
 #import "OTRMediaFileManager.h"
 #import "OTRMediaServer.h"
-#import "OTRLanguageManager.h"
+#import "OTRDatabaseManager.h"
 #import "OTRLog.h"
 #import "OTRPushTLVHandler.h"
 #import "OTRXMPPManager.h"
+#import "OTRYapMessageSendAction.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 
 @import AVFoundation;
@@ -53,6 +55,7 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 
 @interface OTREncryptionManager () <OTRKitDelegate, OTRDataHandlerDelegate>
 @property (nonatomic, strong) OTRKit *otrKit;
+@property (nonatomic, strong) NSCache *otrFingerprintCache;
 @end
 
 @implementation OTREncryptionManager
@@ -60,9 +63,8 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 
 - (id) init {
     if (self = [super init]) {
-        _otrKit = [OTRKit sharedInstance];
-        [self.otrKit setupWithDataPath:nil];
-        self.otrKit.delegate = self;
+        _otrFingerprintCache = [[NSCache alloc] init];
+        _otrKit = [[OTRKit alloc] initWithDelegate:self dataPath:nil];
         _dataHandler = [[OTRDataHandler alloc] initWithOTRKit:self.otrKit delegate:self];
         _pushTLVHandler = [[OTRPushTLVHandler alloc] initWithOTRKit:self.otrKit delegate:nil];
         NSArray *protectPaths = @[self.otrKit.privateKeyPath, self.otrKit.fingerprintsPath, self.otrKit.instanceTagsPath];
@@ -73,28 +75,9 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
             [OTREncryptionManager setFileProtection:NSFileProtectionCompleteUntilFirstUserAuthentication path:path];
             [OTREncryptionManager addSkipBackupAttributeToItemAtURL:[NSURL fileURLWithPath:path]];
         }
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(settingsValueUpdated:) name:kOTRSettingsValueUpdatedNotification object:kOTRSettingKeyOpportunisticOtr];
-        BOOL opportunistic = [OTRSettingsManager boolForOTRSettingKey:kOTRSettingKeyOpportunisticOtr];
-        if (opportunistic) {
-            self.otrKit.otrPolicy = OTRKitPolicyOpportunistic;
-        } else {
-            self.otrKit.otrPolicy = OTRKitPolicyManual;
-        }
+        self.otrKit.otrPolicy = OTRKitPolicyOpportunistic;
     }
     return self;
-}
-
-- (void) settingsValueUpdated:(NSNotification*)notification {
-    id settingsValue = [notification.userInfo objectForKey:kOTRSettingKeyOpportunisticOtr];
-    if ([settingsValue isKindOfClass:[NSNumber class]]) {
-        NSNumber *opportunisticSetting = settingsValue;
-        BOOL opportunistic = opportunisticSetting.boolValue;
-        if (opportunistic) {
-            self.otrKit.otrPolicy = OTRKitPolicyOpportunistic;
-        } else {
-            self.otrKit.otrPolicy = OTRKitPolicyManual;
-        }
-    }
 }
 
 - (OTRProtocolType)prototcolTypeForString:(NSString *)typeString
@@ -108,83 +91,135 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     }
 }
 
-- (void)currentEncryptionState:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol completion:(void (^)(BOOL currentlyTrusted, BOOL hasTurstedFingerprints, OTRKitMessageState messageState))completionBlock completionQueue:(dispatch_queue_t)queue
-{
-    if (!queue) {
-        queue = dispatch_get_main_queue();
-    }
-    
-    __block BOOL currentlyTrusted = NO;
-    __block BOOL hasTrustedFingerprints = NO;
-    __block OTRKitMessageState messageState = OTRKitMessageStatePlaintext;
-    
-    dispatch_group_t group = dispatch_group_create();
-    
-    dispatch_group_enter(group);
-    [self.otrKit activeFingerprintIsVerifiedForUsername:username accountName:accountName protocol:protocol completion:^(BOOL isCurrentlyTrusted) {
-        currentlyTrusted = isCurrentlyTrusted;
-        dispatch_group_leave(group);
-    }];
-    
-    dispatch_group_enter(group);
-    [self.otrKit hasVerifiedFingerprintsForUsername:username accountName:accountName protocol:protocol completion:^(BOOL hasVerifiedFingerprints) {
-        hasTrustedFingerprints = hasVerifiedFingerprints;
-        dispatch_group_leave(group);
-    }];
-    
-    dispatch_group_enter(group);
-    [self.otrKit messageStateForUsername:username accountName:accountName protocol:protocol completion:^(OTRKitMessageState msgState) {
-        messageState = msgState;
-        dispatch_group_leave(group);
-    }];
-    
-    dispatch_group_notify(group, queue, ^{
-        if(completionBlock) {
-            completionBlock(currentlyTrusted, hasTrustedFingerprints, messageState);
-        }
-    });
-}
-
 - (void)maybeRefreshOTRSessionForBuddyKey:(NSString *)buddyKey collection:(NSString *)collection {
     __block OTRBuddy *buddy = nil;
     __block OTRAccount *account = nil;
+    __block BOOL hasOMEMODevices = NO;
     [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
         id databaseObject = [transaction objectForKey:buddyKey inCollection:collection];
         if ([databaseObject isKindOfClass:[OTRBuddy class]]) {
             buddy = databaseObject;
             account = [buddy accountWithTransaction:transaction];
         }
+        hasOMEMODevices = [OTROMEMODevice allDevicesForParentKey:buddyKey collection:collection transaction:transaction].count > 0;
     } completionQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0) completionBlock:^{
         
-        if (buddy.status == OTRThreadStatusOffline) {
+        if (buddy == nil || account == nil) {
+            return;
+        }
+        
+        if (buddy.currentStatus == OTRThreadStatusOffline) {
             //If the buddy if offline then don't try to start the session up
             return;
         }
         
-        [self.otrKit allFingerprintsForUsername:buddy.username accountName:account.username protocol:account.protocolTypeString completion:^(NSArray<NSString *> *activeFingerprint) {
-            if ([activeFingerprint count] > 0) {
-                [self.otrKit messageStateForUsername:buddy.username accountName:account.username protocol:account.protocolTypeString completion:^(OTRKitMessageState messageState) {
-                    if (messageState != OTRKitMessageStateEncrypted) {
-                        [self.otrKit initiateEncryptionWithUsername:buddy.username accountName:account.username protocol:account.protocolTypeString];
-                    }
-                }];
+        // Exit if OTRSessionSecurity is not set to use OTR
+        if (buddy.preferredSecurity != OTRSessionSecurityOTR &&
+            buddy.preferredSecurity != OTRSessionSecurityBestAvailable) {
+            return;
+        }
+        
+        NSArray<OTRFingerprint *>*fingerprints = [self.otrKit fingerprintsForUsername:buddy.username accountName:account.username protocol:account.protocolTypeString];
+        if ([fingerprints count] > 0 || hasOMEMODevices) {
+            OTRKitMessageState messageState = [self.otrKit messageStateForUsername:buddy.username accountName:account.username protocol:account.protocolTypeString];
+            if (messageState != OTRKitMessageStateEncrypted) {
+                [self.otrKit initiateEncryptionWithUsername:buddy.username accountName:account.username protocol:account.protocolTypeString];
             }
-        }];
+        }
     }];
+}
+
+- (NSString *)cacheKeyForYapKey:(NSString *)key collection:(NSString *)collection fingerprint:(NSData *)data
+{
+    return [NSString stringWithFormat:@"%@%@%@",key,collection,@([data hash])];
+}
+
+- (OTRTrustLevel)otrFetchTrustForUsername:(NSString*)username
+                              accountName:(NSString*)accountName
+                                 protocol:(NSString*)protocol
+                              fingerprint:(NSData *)fingerprintData
+{
+    NSArray<OTRFingerprint*>*fingerprints = [self.otrKit fingerprintsForUsername:username accountName:accountName protocol:protocol];
+    __block OTRTrustLevel trust = OTRTrustLevelUnknown;
+    [fingerprints enumerateObjectsUsingBlock:^(OTRFingerprint * _Nonnull finger, NSUInteger idx, BOOL * _Nonnull stop) {
+        if ([finger.fingerprint isEqualToData:fingerprintData]) {
+            trust = finger.trustLevel;
+            *stop = YES;
+        }
+    }];
+    
+    return trust;
+}
+
+- (OTRFingerprint *)otrFingerprintForKey:(NSString *)key collection:(NSString *)collection fingerprint:(NSData *)fingerprint;
+{
+    NSString *cacheKey = [self cacheKeyForYapKey:key collection:collection fingerprint:fingerprint];
+    NSNumber *resultNumber = [self.otrFingerprintCache objectForKey:cacheKey];
+    OTRTrustLevel trust = OTRTrustLevelUnknown;
+    __block OTRBuddy *buddy = nil;
+    __block OTRAccount *account = nil;
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        buddy = [transaction objectForKey:key inCollection:collection];
+        account = [buddy accountWithTransaction:transaction];
+    }];
+    
+    if (!buddy || !account) {
+        return nil;
+    }
+    
+    if (resultNumber == nil) {
+        trust = [self otrFetchTrustForUsername:buddy.username accountName:account.username protocol:account.protocolTypeString fingerprint:fingerprint];
+        // No point in saving uknown trust to the cache. This might cause issues with the cach not being invalidated properly.
+        if (trust != OTRTrustLevelUnknown) {
+            [self.otrFingerprintCache setObject:@(trust) forKey:cacheKey];
+        }
+        
+    } else {
+        trust = resultNumber.unsignedIntegerValue;
+    }
+    
+    return [[OTRFingerprint alloc] initWithUsername:buddy.username accountName:account.username protocol:account.protocolTypeString fingerprint:fingerprint trustLevel:trust];
+}
+
+- (void)saveFingerprint:(OTRFingerprint *)fingerprint;
+{
+    __block OTRBuddy *buddy = nil;
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        buddy = [OTRBuddy fetchBuddyForUsername:fingerprint.username accountName:fingerprint.accountName transaction:transaction];
+    }];
+    [self.otrFingerprintCache setObject:@(fingerprint.trustLevel) forKey:[self cacheKeyForYapKey:buddy.uniqueId collection:[buddy.class collection] fingerprint:fingerprint.fingerprint]];
+    
+    [self.otrKit saveFingerprint:fingerprint];
+}
+
+- (BOOL)removeOTRFingerprint:(OTRFingerprint *)fingerprint error:( NSError * _Nullable *)error;
+{
+    __block OTRBuddy *buddy = nil;
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
+        buddy = [OTRBuddy fetchBuddyForUsername:fingerprint.username accountName:fingerprint.accountName transaction:transaction];
+    }];
+    
+    if (!buddy) {
+        return false;
+    }
+    
+    NSString *cacheKey = [self cacheKeyForYapKey:buddy.uniqueId collection:[buddy.class collection] fingerprint:fingerprint.fingerprint];
+    [self.otrFingerprintCache removeObjectForKey:cacheKey];
+    
+    return [self.otrKit deleteFingerprint:fingerprint error:error];
 }
 
 
 #pragma mark OTRKitDelegate methods
 
-- (void)otrKit:(OTRKit *)otrKit injectMessage:(NSString *)text username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol tag:(id)tag
+- (void)otrKit:(OTRKit *)otrKit injectMessage:(NSString *)text username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol fingerprint:(OTRFingerprint *)fingerprint tag:(id)tag
 {
     //only otrproltocol
-    OTRMessage *message = [[OTRMessage alloc] init];
+    OTROutgoingMessage *message = [[OTROutgoingMessage alloc] init];
     message.text =text;
-    message.incoming = NO;
     
     __block OTRBuddy *buddy = nil;
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         buddy = [OTRBuddy fetchBuddyForUsername:username accountName:accountName transaction:transaction];
     } completionBlock:^{
         message.buddyUniqueId = buddy.uniqueId;
@@ -192,71 +227,75 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
         [[OTRProtocolManager sharedInstance] sendMessage:message];
     }];
 }
-
-- (void)otrKit:(OTRKit *)otrKit encodedMessage:(NSString *)encodedMessage wasEncrypted:(BOOL)wasEncrypted username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol tag:(id)tag error:(NSError *)error
+    
+- (void)otrKit:(OTRKit *)otrKit encodedMessage:(NSString *)encodedMessage wasEncrypted:(BOOL)wasEncrypted username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol fingerprint:(OTRFingerprint *)fingerprint tag:(id)tag error:(NSError *)error
 {
     if (error) {
         DDLogError(@"Encode Error: %@",error);
     }
     
-    __block OTRMessage *message = nil;
+    
     //
-    if ([tag isKindOfClass:[OTRMessage class]]) {
+    if ([tag isKindOfClass:[OTRBaseMessage class]]) {
+        OTRBaseMessage *message = nil;
         message = [tag copy];
         
         // When replying to OTRDATA requests, we pass along the tag
         // of the original incoming message. We don't want to actually show these messages in the chat
         // so if we detect an incoming message in the encodedMessage callback we should just send the encoded data.
-        if (message.isIncoming) {
-            OTRMessage *otrDataMessage = [[OTRMessage alloc] init];
-            otrDataMessage.incoming = NO;
+        if ([message isKindOfClass:[OTRIncomingMessage class]]) {
+            OTROutgoingMessage *otrDataMessage = [[OTROutgoingMessage alloc] init];
             otrDataMessage.buddyUniqueId = message.buddyUniqueId;
             otrDataMessage.text = encodedMessage;
             [[OTRProtocolManager sharedInstance] sendMessage:otrDataMessage];
             return;
+        } else if ([message isKindOfClass:[OTROutgoingMessage class]]) {
+            OTROutgoingMessage *outgoingMessage = (OTROutgoingMessage *)message;
+            if (error) {
+                [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+                    OTROutgoingMessage *dbMessage = [[transaction objectForKey:outgoingMessage.uniqueId inCollection:[OTROutgoingMessage collection]] copy];
+                    dbMessage.error = error;
+                    [dbMessage saveWithTransaction:transaction];
+                    // Need to make sure any sending action associated with this message is removed
+                    NSString * actionKey = [OTRYapMessageSendAction actionKeyForMessageKey:dbMessage.uniqueId messageCollection:[OTROutgoingMessage collection]];
+                    [transaction removeObjectForKey:actionKey inCollection:[OTRYapMessageSendAction collection]];
+                }];
+            }
+            else if ([encodedMessage length]) {
+                if (wasEncrypted && fingerprint != nil) {
+                    outgoingMessage.messageSecurityInfo = [[OTRMessageEncryptionInfo alloc] initWithOTRFingerprint:fingerprint.fingerprint];
+                }
+                [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+                    [message saveWithTransaction:transaction];
+                } completionBlock:^{
+                    OTROutgoingMessage *newEncodedMessage = [outgoingMessage copy];
+                    newEncodedMessage.text = encodedMessage;
+                    [[OTRProtocolManager sharedInstance] sendMessage:newEncodedMessage];
+                }];
+            }
         }
         
-        if (error) {
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                message.error = error;
-                [message saveWithTransaction:transaction];
-            }];
-        }
-        else if ([encodedMessage length]) {
-            if (wasEncrypted) {
-                message.transportedSecurely = YES;
-            }
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                [message saveWithTransaction:transaction];
-            } completionBlock:^{
-                OTRMessage *newEncodedMessage = [message copy];
-                newEncodedMessage.text = encodedMessage;
-                [[OTRProtocolManager sharedInstance] sendMessage:newEncodedMessage];
-            }];
-        }
+        
     }
     else if ([encodedMessage length]) {
-        
+        __block OTROutgoingMessage *outgoingMessage = nil;
         [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-            message = [[OTRMessage alloc] init];
-            message.incoming = NO;
-            message.text = encodedMessage;
+            outgoingMessage = [[OTROutgoingMessage alloc] init];
+            outgoingMessage.text = encodedMessage;
             OTRBuddy *buddy = [OTRBuddy fetchBuddyForUsername:username accountName:accountName transaction:transaction];
-            message.buddyUniqueId = buddy.uniqueId;
+            outgoingMessage.buddyUniqueId = buddy.uniqueId;
             
         } completionBlock:^{
-            [[OTRProtocolManager sharedInstance] sendMessage:message];
+            [[OTRProtocolManager sharedInstance] sendMessage:outgoingMessage];
         }];
     }
-    
-    
 }
 
-- (void)otrKit:(OTRKit *)otrKit decodedMessage:(NSString *)decodedMessage wasEncrypted:(BOOL)wasEncrypted tlvs:(NSArray *)tlvs username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol tag:(id)tag
+- (void)otrKit:(OTRKit *)otrKit decodedMessage:(NSString *)decodedMessage tlvs:(NSArray<OTRTLV *> *)tlvs wasEncrypted:(BOOL)wasEncrypted username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol fingerprint:(OTRFingerprint *)fingerprint tag:(id)tag error:(NSError *)error
 {
     //decodedMessage can be nil if just TLV
-    OTRMessage *originalMessage = nil;
-    if ([tag isKindOfClass:[OTRMessage class]]) {
+    OTRIncomingMessage *originalMessage = nil;
+    if ([tag isKindOfClass:[OTRIncomingMessage class]]) {
         originalMessage = [tag copy];
     }
     NSParameterAssert(originalMessage);
@@ -269,20 +308,23 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
         originalMessage.text = decodedMessage;
         
         if (wasEncrypted) {
-            originalMessage.transportedSecurely = YES;
+            originalMessage.messageSecurityInfo = [[OTRMessageEncryptionInfo alloc] initWithOTRFingerprint:fingerprint.fingerprint];
         }
+        __block OTRXMPPManager *xmpp = nil;
+        __block OTRAccount *account = nil;
         [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
             [originalMessage saveWithTransaction:transaction];
             //Update lastMessageDate for sorting and grouping
             OTRBuddy *buddy = [OTRBuddy fetchObjectWithUniqueID:originalMessage.buddyUniqueId transaction:transaction];
-            buddy.lastMessageDate = originalMessage.date;
+            buddy.lastMessageId = originalMessage.uniqueId;
             [buddy saveWithTransaction:transaction];
             
             // Send delivery receipt
-            OTRAccount *account = [OTRAccount fetchObjectWithUniqueID:buddy.accountUniqueId transaction:transaction];
-            OTRXMPPManager *protocol = (OTRXMPPManager*) [[OTRProtocolManager sharedInstance] protocolForAccount:account];
-            [protocol sendDeliveryReceiptForMessage:originalMessage];
+            account = [OTRAccount fetchObjectWithUniqueID:buddy.accountUniqueId transaction:transaction];
+            xmpp = (OTRXMPPManager*) [[OTRProtocolManager sharedInstance] protocolForAccount:account];
+            [xmpp sendDeliveryReceiptForMessage:originalMessage];
         } completionBlock:^{
+            [xmpp.fileTransferManager createAndDownloadItemsIfNeededWithMessage:originalMessage readConnection:OTRDatabaseManager.shared.readOnlyDatabaseConnection force:NO];
             [[UIApplication sharedApplication] showLocalNotification:originalMessage];
         }];
     }
@@ -292,10 +334,10 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     }
 }
 
-- (void)otrKit:(OTRKit *)otrKit updateMessageState:(OTRKitMessageState)messageState username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol
+- (void)otrKit:(OTRKit *)otrKit updateMessageState:(OTRKitMessageState)messageState username:(NSString *)username accountName:(NSString *)accountName protocol:(NSString *)protocol fingerprint:(OTRFingerprint *)fingerprint
 {
     __block OTRBuddy *buddy = nil;
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         buddy = [OTRBuddy fetchBuddyForUsername:username accountName:accountName transaction:transaction];
     } completionBlock:^{
         if(!buddy) {
@@ -313,11 +355,11 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
              protocol:(NSString*)protocol {
     
     __block OTRBuddy *buddy = nil;
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         buddy = [OTRBuddy fetchBuddyForUsername:username accountName:accountName transaction:transaction];
     }];
     
-    if(!buddy || buddy.status == OTRThreadStatusOffline) {
+    if(!buddy || buddy.currentStatus == OTRThreadStatusOffline) {
         return NO;
     }
     else {
@@ -350,7 +392,7 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     //incoming and outgoing errors and other events
     DDLogWarn(@"Message Event: %d Error:%@",(int)event,[OTREncryptionManager errorForMessageEvent:event string:nil].localizedDescription);
     
-    if ([tag isKindOfClass:[OTRMessage class]]) {
+    if ([tag isKindOfClass:[OTRBaseMessage class]]) {
         __block NSError *error = nil;
         
         // These are the errors caught and 
@@ -366,16 +408,22 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
             default:
                 break;
         }
-        if (error) {
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                OTRMessage *message = (OTRMessage *)tag;
-                message.error = error;
-                message.text = [OTREncryptionManager errorForMessageEvent:event string:nil].localizedDescription;
-                [message saveWithTransaction:transaction];
-            }];
+        if (error != nil) {
+            if ([tag isKindOfClass:[OTRBaseMessage class]]) {
+                [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+                    OTRBaseMessage *dbMessage = [[OTRBaseMessage fetchObjectWithUniqueID:((OTRBaseMessage *)tag).uniqueId transaction:transaction] copy];
+                    dbMessage.error = error;
+                    dbMessage.text = [OTREncryptionManager errorForMessageEvent:event string:nil].localizedDescription;
+                    [dbMessage saveWithTransaction:transaction];
+                    //Remove the action if there is an error on the parent message.
+                    NSString * actionKey = [OTRYapMessageSendAction actionKeyForMessageKey:dbMessage.uniqueId messageCollection:[OTRBaseMessage collection]];
+                    [transaction removeObjectForKey:actionKey inCollection:[OTRYapMessageSendAction collection]];
+                }];
+            }
+            
             // Inject message to recipient indicating error
             NSString *errorString = [NSString stringWithFormat:@"OTR Error: %@", [OTREncryptionManager errorForMessageEvent:event string:nil].localizedDescription];
-            [self otrKit:self.otrKit injectMessage:errorString username:username accountName:accountName protocol:protocol tag:tag];
+            [self otrKit:self.otrKit injectMessage:errorString username:username accountName:accountName protocol:protocol fingerprint:nil tag:tag];
             // automatically renegotiate a new session when there's an error
             [self.otrKit initiateEncryptionWithUsername:username accountName:accountName protocol:protocol];
         }
@@ -398,7 +446,7 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 - (void)otrKit:(OTRKit *)otrKit willStartGeneratingPrivateKeyForAccountName:(NSString *)accountName protocol:(NSString *)protocol
 {
     __block OTRAccount *account = nil;
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         
         account = [[OTRAccount allAccountsWithUsername:accountName transaction:transaction] firstObject];
     } completionBlock:^{
@@ -411,7 +459,7 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 - (void)otrKit:(OTRKit *)otrKit didFinishGeneratingPrivateKeyForAccountName:(NSString *)accountName protocol:(NSString *)protocol error:(NSError *)error
 {
     __block OTRAccount *account = nil;
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         account = [[OTRAccount allAccountsWithUsername:accountName transaction:transaction] firstObject];;
     } completionBlock:^{
         [[NSNotificationCenter defaultCenter] postNotificationName:OTRDidFinishGeneratingPrivateKeyNotification object:account];
@@ -426,7 +474,7 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     NSString *eventString = [OTREncryptionManager stringForEvent:event];
     
     NSInteger code = 200 + event;
-    NSMutableString *description = [NSMutableString stringWithString:ENCRYPTION_ERROR_STRING];
+    NSMutableString *description = [NSMutableString stringWithString:ENCRYPTION_ERROR_STRING()];
     if (string.length) {
         [description appendFormat:@"\n\n%@: %@", string, eventString];
     }
@@ -445,49 +493,49 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     NSString *string = nil;
     switch (event) {
         case OTRKitMessageEventEncryptionRequired:
-            string = OTRL_MSGEVENT_ENCRYPTION_REQUIRED_STRING;
+            string = OTRL_MSGEVENT_ENCRYPTION_REQUIRED_STRING();
             break;
         case OTRKitMessageEventEncryptionError:
-            string = OTRL_MSGEVENT_ENCRYPTION_ERROR_STRING;
+            string = OTRL_MSGEVENT_ENCRYPTION_ERROR_STRING();
             break;
         case OTRKitMessageEventConnectionEnded:
-            string = OTRL_MSGEVENT_CONNECTION_ENDED_STRING;
+            string = OTRL_MSGEVENT_CONNECTION_ENDED_STRING();
             break;
         case OTRKitMessageEventSetupError:
-            string = OTRL_MSGEVENT_SETUP_ERROR_STRING;
+            string = OTRL_MSGEVENT_SETUP_ERROR_STRING();
             break;
         case OTRKitMessageEventMessageReflected:
-            string = OTRL_MSGEVENT_MSG_REFLECTED_STRING;
+            string = OTRL_MSGEVENT_MSG_REFLECTED_STRING();
             break;
         case OTRKitMessageEventMessageResent:
-            string = OTRL_MSGEVENT_MSG_RESENT_STRING;
+            string = OTRL_MSGEVENT_MSG_RESENT_STRING();
             break;
         case OTRKitMessageEventReceivedMessageNotInPrivate:
-            string = OTRL_MSGEVENT_RCVDMSG_NOT_IN_PRIVATE_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_NOT_IN_PRIVATE_STRING();
             break;
         case OTRKitMessageEventReceivedMessageUnreadable:
-            string = OTRL_MSGEVENT_RCVDMSG_UNREADABLE_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_UNREADABLE_STRING();
             break;
         case OTRKitMessageEventReceivedMessageMalformed:
-            string = OTRL_MSGEVENT_RCVDMSG_MALFORMED_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_MALFORMED_STRING();
             break;
         case OTRKitMessageEventLogHeartbeatReceived:
-            string = OTRL_MSGEVENT_LOG_HEARTBEAT_RCVD_STRING;
+            string = OTRL_MSGEVENT_LOG_HEARTBEAT_RCVD_STRING();
             break;
         case OTRKitMessageEventLogHeartbeatSent:
-            string = OTRL_MSGEVENT_LOG_HEARTBEAT_SENT_STRING;
+            string = OTRL_MSGEVENT_LOG_HEARTBEAT_SENT_STRING();
             break;
         case OTRKitMessageEventReceivedMessageGeneralError:
-            string = OTRL_MSGEVENT_RCVDMSG_GENERAL_ERR_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_GENERAL_ERR_STRING();
             break;
         case OTRKitMessageEventReceivedMessageUnencrypted:
-            string = OTRL_MSGEVENT_RCVDMSG_UNENCRYPTED_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_UNENCRYPTED_STRING();
             break;
         case OTRKitMessageEventReceivedMessageUnrecognized:
-            string = OTRL_MSGEVENT_RCVDMSG_UNRECOGNIZED_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_UNRECOGNIZED_STRING();
             break;
         case OTRKitMessageEventReceivedMessageForOtherInstance:
-            string = OTRL_MSGEVENT_RCVDMSG_FOR_OTHER_INSTANCE_STRING;
+            string = OTRL_MSGEVENT_RCVDMSG_FOR_OTHER_INSTANCE_STRING();
             break;
         default:
             break;
@@ -534,41 +582,25 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 
 #pragma mark OTRDataHandlerDelegate methods
 
-- (void)dataHandler:(OTRDataHandler*)dataHandler
-           transfer:(OTRDataTransfer*)transfer
-              error:(NSError*)error {
+- (void)dataHandler:(OTRDataHandler *)dataHandler transfer:(OTRDataTransfer *)transfer fingerprint:(OTRFingerprint *)fingerprint error:(NSError *)error
+{
     DDLogError(@"error with file transfer: %@ %@", transfer, error);
 }
 
-- (void)dataHandler:(OTRDataHandler*)dataHandler
-    offeredTransfer:(OTRDataIncomingTransfer*)transfer {
+- (void)dataHandler:(OTRDataHandler *)dataHandler offeredTransfer:(OTRDataIncomingTransfer *)transfer fingerprint:(OTRFingerprint *)fingerprint
+{
     DDLogInfo(@"offered file transfer: %@", transfer);
     
     // for now, just accept all incoming files
     [dataHandler startIncomingTransfer:transfer];
     //Create placeholder for updating progress
     
-    OTRMessage *newMessage = [((OTRMessage *)transfer.tag) copy];
-    newMessage.transportedSecurely = YES;
+    OTRIncomingMessage *newMessage = [((OTRIncomingMessage *)transfer.tag) copy];
+    newMessage.messageSecurityInfo = [[OTRMessageEncryptionInfo alloc] initWithOTRFingerprint:fingerprint.fingerprint];
     newMessage.text = nil;
     
-    NSRange imageRange = [transfer.mimeType rangeOfString:@"image"];
-    NSRange audioRange = [transfer.mimeType rangeOfString:@"audio"];
-    NSRange videoRange = [transfer.mimeType rangeOfString:@"video"];
+    OTRMediaItem *mediaItem = [OTRMediaItem incomingItemWithFilename:transfer.fileName mimeType:transfer.mimeType];
     
-    OTRMediaItem *mediaItem = nil;
-    if(audioRange.location == 0) {
-        mediaItem = [[OTRAudioItem alloc] init];
-        
-    } else if (imageRange.location == 0) {
-        mediaItem = [[OTRImageItem alloc] init];
-        
-    } else if (videoRange.location == 0) {
-        mediaItem = [[OTRVideoItem alloc] init];
-    }
-    
-    mediaItem.filename = transfer.fileName;
-    mediaItem.isIncoming = YES;
     newMessage.mediaItemUniqueId = mediaItem.uniqueId;
     
     
@@ -579,21 +611,23 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
 //    }
     
     [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+        OTRBuddy *buddy = [OTRBuddy fetchObjectWithUniqueID:newMessage.buddyUniqueId transaction:transaction];
+        buddy.lastMessageId = newMessage.uniqueId;
         [newMessage saveWithTransaction:transaction];
+        [buddy saveWithTransaction:transaction];
         [mediaItem saveWithTransaction:transaction];
     }];
     
     
 }
 
-- (void)dataHandler:(OTRDataHandler*)dataHandler
-           transfer:(OTRDataTransfer*)transfer
-           progress:(float)progress {
+- (void)dataHandler:(OTRDataHandler *)dataHandler transfer:(OTRDataTransfer *)transfer progress:(float)progress fingerprint:(OTRFingerprint *)fingerprint
+{
     DDLogInfo(@"[OTRDATA]file transfer %@ progress: %f", transfer.transferId, progress);
     
     [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-        OTRMessage *tagMessage = transfer.tag;
-        OTRMessage *databaseMessage = [OTRMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
+        OTRBaseMessage *tagMessage = transfer.tag;
+        OTRBaseMessage *databaseMessage = [OTRBaseMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
         OTRMediaItem *mediaItem = [OTRMediaItem fetchObjectWithUniqueID:databaseMessage.mediaItemUniqueId transaction:transaction];
         mediaItem.transferProgress = progress;
         [mediaItem saveWithTransaction:transaction];
@@ -602,27 +636,37 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
     
 }
 
-- (void)dataHandler:(OTRDataHandler*)dataHandler
-   transferComplete:(OTRDataTransfer*)transfer {
+- (void)dataHandler:(OTRDataHandler *)dataHandler transferComplete:(OTRDataTransfer *)transfer fingerprint:(OTRFingerprint *)fingerprint
+{
     DDLogInfo(@"transfer complete: %@", transfer);
     if ([transfer isKindOfClass:[OTRDataOutgoingTransfer class]]) {
         [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-            OTRMessage *tagMessage = transfer.tag;
-            OTRMessage *message = [OTRMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
+            OTROutgoingMessage *tagMessage = transfer.tag;
+            OTROutgoingMessage *message = [OTROutgoingMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
             message.delivered = YES;
+            if (message.dateSent == nil) {
+                message.dateSent = [NSDate date];
+            }
+            message.dateDelivered = [NSDate date];
+            
+            OTRBuddy *buddy = [OTRBuddy fetchObjectWithUniqueID:message.uniqueId transaction:transaction];
+            buddy.lastMessageId = message.uniqueId;
             [message saveWithTransaction:transaction];
+            [buddy saveWithTransaction:transaction];
         }];
     }
     else if ([transfer isKindOfClass:[OTRDataIncomingTransfer class]]) {
         
-        __block OTRMessage *tagMessage = transfer.tag;
+        __block OTRIncomingMessage *tagMessage = transfer.tag;
         
-        __block OTRMessage *message = nil;
+        __block OTRIncomingMessage *message = nil;
         __block OTRMediaItem *mediaItem = nil;
+        __block OTRBuddy *buddy = nil;
         
-        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
-            message = [OTRMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
+        [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+            message = [OTRIncomingMessage fetchObjectWithUniqueID:tagMessage.uniqueId transaction:transaction];
             mediaItem = [OTRMediaItem fetchObjectWithUniqueID:message.mediaItemUniqueId transaction:transaction];
+            buddy = [OTRBuddy fetchObjectWithUniqueID:message.uniqueId transaction:transaction];
         }];
         
         mediaItem.transferProgress = 1;
@@ -633,12 +677,13 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
             [[OTRMediaFileManager sharedInstance] setData:transfer.fileData forItem:audioItem buddyUniqueId:message.buddyUniqueId completion:^(NSInteger bytesWritten, NSError *error) {
                 
                 NSURL *url = [[OTRMediaServer sharedInstance] urlForMediaItem:audioItem buddyUniqueId:message.buddyUniqueId];
-                AVURLAsset *audioAsset = [AVURLAsset assetWithURL:url];
-                audioItem.timeLength = CMTimeGetSeconds(audioAsset.duration);
+                [audioItem populateFromDataAtUrl:url];
                 
                 [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
                     [audioItem saveWithTransaction:transaction];
                     [message saveWithTransaction:transaction];
+                    buddy.lastMessageId = message.uniqueId;
+                    [buddy saveWithTransaction:transaction];
                 }];
                 
                 
@@ -648,16 +693,18 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
             OTRImageItem *imageItem = (OTRImageItem *)mediaItem;
             
             UIImage *tempImage = [UIImage imageWithData:transfer.fileData];
-            imageItem.width = tempImage.size.width;
-            imageItem.height = tempImage.size.height;
-            
+            imageItem.size = tempImage.size;
             
             [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
                 [message saveWithTransaction:transaction];
                 [imageItem saveWithTransaction:transaction];
+                buddy.lastMessageId = message.uniqueId;
+                [buddy saveWithTransaction:transaction];
             } completionBlock:^{
                 [[OTRMediaFileManager sharedInstance] setData:transfer.fileData forItem:imageItem buddyUniqueId:message.buddyUniqueId completion:^(NSInteger bytesWritten, NSError *error) {
-                    [imageItem touchParentMessage];
+                    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+                        [imageItem touchParentMessageWithTransaction:transaction];
+                    }];
                 } completionQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)];
             }];
              
@@ -671,6 +718,8 @@ NSString *const OTRMessageStateKey = @"OTREncryptionManagerMessageStateKey";
                 [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
                     [videoItem saveWithTransaction:transaction];
                     [message saveWithTransaction:transaction];
+                    buddy.lastMessageId = message.uniqueId;
+                    [buddy saveWithTransaction:transaction];
                 }];
                 
             } completionQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)];

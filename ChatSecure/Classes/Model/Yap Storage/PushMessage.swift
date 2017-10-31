@@ -9,71 +9,131 @@
 import Foundation
 
 ///A simple message object to mark when push or knock messages were sent off
-public class PushMessage: OTRYapDatabaseObject {
+@objc open class PushMessage: OTRYapDatabaseObject {
+    @objc open var originId:String?
+    @objc open var stanzaId:String?
     
     /// The buddy the knock was sent to
-    public var buddyKey:String?
+    @objc open var buddyKey:String?
     
     /// Any error from the ChatSecure-Push-Server
-    public var error:NSError?
+    @objc open var error:NSError?
     
     /// the date the push was sent, used for sorting
-    public var pushDate:NSDate = NSDate()
+    @objc open var pushDate:Date = Date()
     
     ///Send it to the same collection of other messages
-    public class override func collection() -> String {
-        return OTRMessage.collection()
+    open class override var collection: String {
+        return OTRBaseMessage.collection
     }
     
 }
 
 extension PushMessage: OTRMessageProtocol {
-    public func messageKey() -> String! {
-        return self.uniqueId
+    public func duplicateMessage() -> OTRMessageProtocol {
+        return PushMessage()
     }
     
-    public func messageCollection() -> String! {
-        return OTRMessage.collection()
-    }
-    
-    public func threadId() -> String! {
-        return self.buddyKey
-    }
-    
-    public func messageIncoming() -> Bool {
-        return false
-    }
-    
-    public func messageMediaItemKey() -> String! {
-        return nil
-    }
-    
-    public func messageError() -> NSError! {
-        return self.error
-    }
-    
-    public func transportedSecurely() -> Bool {
-        return false
-    }
-    
-    public func messageRead() -> Bool {
+    public var isMessageSent: Bool {
         return true
     }
     
-    public func date() -> NSDate! {
-        return self.pushDate
+    public var isMessageDelivered: Bool {
+        return true
     }
     
-    public func text() -> String! {
+    public var messageMediaItemKey: String? {
+        get {
+            return nil
+        }
+        set(messageMediaItemKey) {
+            
+        }
+    }
+
+    public var messageText: String? {
+        get {
+            return nil
+        }
+        set(messageText) {
+            
+        }
+    }
+
+    public var messageError: Error? {
+        get {
+            return self.error
+        }
+        set(messageError) {
+            // let's do nothing here
+        }
+    }
+
+    public func downloads() -> [OTRDownloadMessage] {
+        return []
+    }
+    
+    public func existingDownloads(with transaction: YapDatabaseReadTransaction) -> [OTRDownloadMessage] {
+        return []
+    }
+    
+    public func hasExistingDownloads(with transaction: YapDatabaseReadTransaction) -> Bool {
+        return false
+    }
+    
+    public var messageKey: String {
+        return self.uniqueId
+    }
+    
+    public var messageCollection: String {
+        return OTRBaseMessage.collection
+    }
+    
+    public var threadId: String {
+        if let threadId = self.buddyKey {
+            return threadId
+        } else {
+            fatalError("ThreadId should not be nil!")
+        }
+    }
+    
+    public var threadCollection: String {
+        return OTRBuddy.collection
+    }
+    
+    public var isMessageIncoming: Bool {
+        return false
+    }
+    
+    public var messageSecurity: OTRMessageTransportSecurity {
+        get {
+            return .plaintext
+        }
+        set {}
+    }
+    
+    public var isMessageRead: Bool {
+        return true
+    }
+    
+    public var messageDate: Date {
+        set {
+            self.pushDate = newValue
+        }
+        get {
+            return self.pushDate
+        }
+    }
+    
+    public var remoteMessageId: String? {
         return nil
     }
     
-    public func remoteMessageId() -> String! {
-        return nil
-    }
-    
-    public func threadOwnerWithTransaction(transaction: YapDatabaseReadTransaction!) -> OTRThreadOwner! {
-        return OTRBuddy.fetchObjectWithUniqueID(self.buddyKey, transaction: transaction)
+    public func threadOwner(with transaction: YapDatabaseReadTransaction) -> OTRThreadOwner? {
+        guard let key = self.buddyKey else {
+            return nil
+        }
+        return OTRBuddy.fetchObject(withUniqueID: key, transaction: transaction)
     }
 }
 
@@ -82,7 +142,7 @@ extension PushMessage: YapDatabaseRelationshipNode {
         
         if let destinationKey = self.buddyKey {
             let name = "buddy"
-            return [YapDatabaseRelationshipEdge(name: name, destinationKey: destinationKey, collection: OTRBuddy.collection(), nodeDeleteRules: YDB_NodeDeleteRules.DeleteSourceIfDestinationDeleted)]
+            return [YapDatabaseRelationshipEdge(name: name, destinationKey: destinationKey, collection: OTRBuddy.collection, nodeDeleteRules: YDB_NodeDeleteRules.deleteSourceIfDestinationDeleted)]
         }
         return nil
         
@@ -92,15 +152,26 @@ extension PushMessage: YapDatabaseRelationshipNode {
 extension PushMessage {
     func account() -> OTRAccount? {
         var account:OTRAccount? = nil
-        OTRDatabaseManager.sharedInstance().readOnlyDatabaseConnection .readWithBlock { (transaction) -> Void in
-            let buddy = OTRBuddy.fetchObjectWithUniqueID(self.buddyKey, transaction: transaction)
-            account = buddy.accountWithTransaction(transaction)
+        OTRDatabaseManager.sharedInstance().readOnlyDatabaseConnection?.read { (transaction) -> Void in
+            if let buddyKey = self.buddyKey {
+                if let buddy = OTRBuddy.fetchObject(withUniqueID: buddyKey, transaction: transaction) {
+                    account = buddy.account(with: transaction)
+                }
+            }
         }
         return account
     }
 }
 
 extension PushMessage: JSQMessageData {
+    public func text() -> String {
+        return self.messageText ?? ""
+    }
+    
+    public func date() -> Date {
+        return self.messageDate
+    }
+
     public func senderId() -> String! {
         let account = self.account()
         return account?.uniqueId ?? ""

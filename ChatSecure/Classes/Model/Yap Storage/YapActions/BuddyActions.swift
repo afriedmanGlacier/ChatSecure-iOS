@@ -8,17 +8,18 @@
 
 import Foundation
 import YapDatabase.YapDatabaseActionManager
+import YapTaskQueue
 
 @objc public enum BuddyActionType: Int {
-    case Delete
+    case delete
 }
 
-public class BuddyAction: OTRYapDatabaseObject, YapActionable {
+open class BuddyAction: OTRYapDatabaseObject, YapActionable {
     
-    public var action:BuddyActionType = .Delete
-    public var buddy:OTRBuddy?
+    @objc open var action:BuddyActionType = .delete
+    @objc open var buddy:OTRBuddy?
     
-    public func yapActionItems() -> [YapActionItem]? {
+    open func yapActionItems() -> [YapActionItem]? {
         
         guard let buddy = self.buddy else {
             return nil
@@ -27,32 +28,42 @@ public class BuddyAction: OTRYapDatabaseObject, YapActionable {
         return BuddyAction.actions(buddy, action: self.action)
     }
     
-    public func hasYapActionItems() -> Bool {
+    open func hasYapActionItems() -> Bool {
         return true
     }
     
-    public class func actions(buddy:OTRBuddy, action:BuddyActionType) -> [YapActionItem] {
+    open class func actions(_ buddy:OTRBuddy, action:BuddyActionType) -> [YapActionItem] {
         
         switch action {
-        case .Delete:
+        case .delete:
             let action = YapActionItem(identifier:"delete", date: nil, retryTimeout: 30, requiresInternet: true, block: { (collection, key, object, metadata) -> Void in
                 
-                let connection = OTRDatabaseManager.sharedInstance().readWriteDatabaseConnection
-                
-                var account:OTRAccount? = nil
-                connection.readWithBlock({ (transaction) -> Void in
-                    account = OTRAccount.fetchObjectWithUniqueID(buddy.accountUniqueId, transaction: transaction)
-                })
-                
-                guard let acct = account else {
+                guard let connection = OTRDatabaseManager.sharedInstance().readWriteDatabaseConnection else {
                     return
                 }
                 
-                let proto = OTRProtocolManager.sharedInstance().protocolForAccount(acct)
-                if proto.connectionStatus() == .Connected {
+                var account:OTRAccount? = nil
+                connection.read({ (transaction) -> Void in
+                    account = OTRAccount.fetchObject(withUniqueID: buddy.accountUniqueId, transaction: transaction)
+                })
+                
+                guard let acct = account else {
+                    connection.readWrite({ (transaction) -> Void in
+                        transaction.removeObject(forKey: key, inCollection: collection)
+                    })
+                    return
+                }
+                
+                guard let proto = OTRProtocolManager.sharedInstance().protocol(for: acct) else {
+                    connection.readWrite({ (transaction) -> Void in
+                        transaction.removeObject(forKey: key, inCollection: collection)
+                    })
+                    return
+                }
+                if proto.connectionStatus == .connected {
                     proto.removeBuddies([buddy])
-                    connection.readWriteWithBlock({ (transaction) -> Void in
-                        transaction.removeObjectForKey(key, inCollection: collection)
+                    connection.readWrite({ (transaction) -> Void in
+                        transaction.removeObject(forKey: key, inCollection: collection)
                     })
                 }
                 
@@ -61,4 +72,53 @@ public class BuddyAction: OTRYapDatabaseObject, YapActionable {
         }
 
     }
+}
+
+@objc open class OTRYapBuddyAction: OTRYapDatabaseObject, YapTaskQueueAction {
+    @objc open var buddyKey:String = ""
+    @objc open var date:Date = Date()
+
+    override open var uniqueId: String {
+        return buddyKey
+    }
+
+    override open static var collection: String {
+        return OTRYapMessageSendAction.collection
+    }
+    
+    /// The yap key of this item
+    public func yapKey() -> String {
+        return self.uniqueId
+    }
+    
+    /// The yap collection of this item
+    public func yapCollection() -> String {
+        return type(of: self).collection
+    }
+    
+    /// The queue that this item is in.
+    public func queueName() -> String {
+        let brokerName = YapDatabaseConstants.extensionName(.messageQueueBrokerViewName)
+        return "\(brokerName).\(self.buddyKey)"
+    }
+    
+    /// How this item should be sorted compared to other items in it's queue
+    public func sort(_ otherObject:YapTaskQueueAction) -> ComparisonResult {
+        guard let otherDate = (otherObject as? OTRYapBuddyAction)?.date else {
+            return .orderedSame
+        }
+        return self.date.compare(otherDate)
+    }
+}
+
+open class OTRYapAddBuddyAction :OTRYapBuddyAction, YapDatabaseRelationshipNode {
+    public func yapDatabaseRelationshipEdges() -> [YapDatabaseRelationshipEdge]? {
+        let edge = YapDatabaseRelationshipEdge(name: RelationshipEdgeName.buddyActionEdgeName.name(), destinationKey: self.buddyKey, collection: OTRBuddy.collection, nodeDeleteRules: .deleteSourceIfDestinationDeleted)
+        return [edge]
+    }
+}
+
+open class OTRYapRemoveBuddyAction :OTRYapBuddyAction {
+    @objc open var accountKey:String?
+    @objc open var buddyJid:String?
 }

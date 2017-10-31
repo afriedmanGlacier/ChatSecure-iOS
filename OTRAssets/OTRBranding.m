@@ -7,7 +7,9 @@
 //
 
 #import "OTRBranding.h"
-#import "OTRAssets.h"
+
+NSString *const kOTRSettingKeyLanguage                 = @"userSelectedSetting";
+NSString *const kOTRDefaultLanguageLocale = @"kOTRDefaultLanguageLocale";
 
 static NSString *const kOTRXMPPResource = @"kOTRXMPPResource";
 static NSString *const kOTRFeedbackEmail = @"kOTRFeedbackEmail";
@@ -82,6 +84,19 @@ static NSString *const GOOGLE_APP_SCOPE = @"GOOGLE_APP_SCOPE";
     return url;
 }
 
+/** Push staging server URL e.g. https://chatsecure-push.herokuapp.com/api/v1/ */
++ (NSURL *)pushStagingAPIURL {
+    NSString *urlString = [[self defaultPlist] objectForKey:@"StagingPushAPIURL"];
+    NSURL *url = [NSURL URLWithString:urlString];
+    return url;
+}
+
++ (NSURL *)testflightSignupURL {
+    NSString *urlString = [[self defaultPlist] objectForKey:@"TestflightSignupURL"];
+    NSURL *url = [NSURL URLWithString:urlString];
+    return url;
+}
+
 #pragma mark Strings
 
 /** The default XMPP resource (e.g. username@example.com/chatsecure) */
@@ -104,17 +119,67 @@ static NSString *const GOOGLE_APP_SCOPE = @"GOOGLE_APP_SCOPE";
     return [[self defaultPlist] objectForKey:GOOGLE_APP_SCOPE];
 }
 
+/** UserVoice Site */
++ (nullable NSString*) userVoiceSite {
+    return [[self defaultPlist] objectForKey:@"UserVoiceSite"];
+}
 
+/** If enabled, will show a ⚠️ symbol next to your account when push may have issues */
++ (BOOL) shouldShowPushWarning {
+    BOOL result = [[[self defaultPlist] objectForKey:@"ShouldShowPushWarning"] boolValue];
+    return result;
+}
 
+/** If enabled, the server selection cell will be shown when creating new accounts. Otherwise it will be hidden in the 'advanced' section. */
++ (BOOL) shouldShowServerCell {
+    BOOL result = [[[self defaultPlist] objectForKey:@"ShouldShowServerCell"] boolValue];
+    return result;
+}
 
++ (BOOL) showsColorForStatus {
+    BOOL result = [[[self defaultPlist] objectForKey:@"ShowsColorForStatus"] boolValue];
+    return result;
+}
+
++ (BOOL) torEnabled {
+    BOOL result = [[[self defaultPlist] objectForKey:@"TorEnabled"] boolValue];
+    return result;
+}
+
+/** Returns true if we're running the official ChatSecure */
++ (BOOL) matchesUpstream {
+    return [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.chrisballinger.ChatSecure"];
+}
+
++ (BOOL) allowsDonation {
+    // Only allow this for upstream
+    if (![self matchesUpstream]) {
+        return NO;
+    }
+    BOOL result = [[[self defaultPlist] objectForKey:@"AllowsDonation"] boolValue];
+    return result;
+}
 
 + (NSDictionary*) defaultPlist {
+    // Normally this won't be nil, but they WILL be nil during tests.
     NSBundle *bundle = [OTRAssets resourcesBundle];
     NSString *path = [bundle pathForResource:@"Branding" ofType:@"plist"];
-    NSParameterAssert(path != nil);
+    //NSParameterAssert(path != nil);
     NSDictionary *plist = [[NSDictionary alloc] initWithContentsOfFile:path];
-    NSParameterAssert(plist != nil);
+    //NSParameterAssert(plist != nil);
     return plist;
+}
+
+@end
+
+@implementation OTRAssets
+
+/** Returns OTRResources.bundle */
++ (NSBundle*) resourcesBundle {
+    NSString *folderName = @"OTRResources.bundle";
+    NSString *bundlePath = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:folderName];
+    NSBundle *dataBundle = [NSBundle bundleWithPath:bundlePath];
+    return dataBundle;
 }
 
 @end

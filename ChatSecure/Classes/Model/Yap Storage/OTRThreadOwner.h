@@ -6,32 +6,47 @@
 //  Copyright © 2015 Chris Ballinger. All rights reserved.
 //
 
-#import "OTRMessage.h"
+#import "OTRBaseMessage.h"
+
+@class OTRAccount;
 
 typedef NS_ENUM(NSInteger, OTRThreadStatus) {
-    OTRThreadStatusAvailable    = 0,
-    OTRThreadStatusAway         = 1,
-    OTRThreadStatusDoNotDisturb = 2,
-    OTRThreadStatusExtendedAway = 3,
-    OTRThreadStatusOffline      = 4
+    OTRThreadStatusUnknown      = 0,
+    OTRThreadStatusAvailable    = 1,
+    OTRThreadStatusAway         = 2,
+    OTRThreadStatusDoNotDisturb = 3,
+    OTRThreadStatusExtendedAway = 4,
+    OTRThreadStatusOffline      = 5
 };
 
-@protocol OTRThreadOwner <NSObject>
+NS_ASSUME_NONNULL_BEGIN
+@protocol OTRThreadOwner <OTRYapDatabaseObjectProtocol>
 @required
-- (nonnull NSString *)threadName;
-- (nonnull NSString *)threadIdentifier;
-- (nonnull NSString *)threadCollection;
-- (nonnull NSString *)threadAccountIdentifier;
-- (void)setCurrentMessageText:(nullable NSString*)text;
-- (nullable NSString *)currentMessageText;
-- (nullable NSDate*)lastMessageDate;
-- (nonnull UIImage *)avatarImage;
-- (OTRThreadStatus)currentStatus;
-- (nullable id <OTRMessageProtocol>)lastMessageWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction;
-- (void)setAllMessagesAsReadInTransaction:(nonnull YapDatabaseReadWriteTransaction *)transaction;
-- (BOOL)isGroupThread;
+/** If thread should be hidden from main lists */
+@property (nonatomic, readwrite) BOOL isArchived;
+/** Whether or not notifications should be hidden. Computed by comparing current time to muteExpiration. */
+@property (nonatomic, readonly) BOOL isMuted;
+/** How long until the thread is unmuted. If nil, thread will be considered unmuted. */
+@property (nonatomic, strong, nullable) NSDate *muteExpiration;
 
+@property (nonatomic, readonly) NSString *threadName;
+@property (nonatomic, readonly) NSString *threadIdentifier;
+@property (nonatomic, readonly) NSString *threadCollection;
+@property (nonatomic, readonly) NSString *threadAccountIdentifier;
+@property (nonatomic, readwrite, nullable) NSString *currentMessageText;
+@property (nonatomic, readonly) UIImage *avatarImage;
+@property (nonatomic, readonly) OTRThreadStatus currentStatus;
+/** The database identifier for the thread's most recent message. @warn ⚠️ This is no longer used for fetching with lastMessageWithTransaction: and may be invalid, but is being kept around due to a hack to force-show new threads that are empty. */
+@property (nonatomic, strong, readwrite, nullable) NSString* lastMessageIdentifier;
+- (nullable id <OTRMessageProtocol>)lastMessageWithTransaction:( YapDatabaseReadTransaction *)transaction;
+- (NSUInteger)numberOfUnreadMessagesWithTransaction:( YapDatabaseReadTransaction*)transaction;
+@property (nonatomic, readonly) BOOL isGroupThread;
 
+- (nullable OTRAccount*)accountWithTransaction:(YapDatabaseReadTransaction *)transaction;
+
+/** New outgoing message. Unsaved! */
+- (id<OTRMessageProtocol>)outgoingMessageWithText:(NSString*)text transaction:(YapDatabaseReadTransaction*)transaction;
 @end
+NS_ASSUME_NONNULL_END
 
 

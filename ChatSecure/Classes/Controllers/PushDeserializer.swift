@@ -9,30 +9,31 @@
 import Foundation
 import ChatSecure_Push_iOS
 
-public class PushDeserializer: NSObject  {
+open class PushDeserializer: NSObject  {
     
-    public class func deserializeToken(data:NSData) throws -> [TokenContainer] {
-        guard let jsonDictionary = try NSJSONSerialization.JSONObjectWithData(data, options: NSJSONReadingOptions()) as? [String:AnyObject] else {
-            throw PushError.invalidJSON.error()
+    open class func deserializeToken(_ data:Data) throws -> [TokenContainer] {
+        guard let jsonDictionary = try JSONSerialization.jsonObject(with: data, options: JSONSerialization.ReadingOptions()) as? [String:AnyObject] else {
+            throw NSError.chatSecureError(PushError.invalidJSON, userInfo: nil)
         }
         
         guard let apiEndPoint = jsonDictionary[jsonKeys.endpoint.rawValue] as? String else {
-            throw PushError.missingAPIEndpoint.error()
+            throw NSError.chatSecureError(PushError.missingAPIEndpoint, userInfo: nil)
         }
         
-        let apiURL = NSURL(string: apiEndPoint)
+        let apiURL = URL(string: apiEndPoint)
         
         guard let tokenStrings = jsonDictionary[jsonKeys.tokens.rawValue] as? [String] else {
-            throw PushError.missingTokens.error()
+            throw NSError.chatSecureError(PushError.missingTokens, userInfo: nil)
         }
         
         var tokenArray:[TokenContainer] = []
         for tokenString in tokenStrings {
             let pushToken = Token(tokenString: tokenString,type: .unknown, deviceID: nil)
-            let tokenContainer = TokenContainer()
-            tokenContainer.pushToken = pushToken
-            tokenContainer.endpoint = apiURL
-            tokenArray.append(tokenContainer)
+            if let tokenContainer = TokenContainer() {
+                tokenContainer.pushToken = pushToken
+                tokenContainer.endpoint = apiURL
+                tokenArray.append(tokenContainer)
+            }
         }
         
         return tokenArray

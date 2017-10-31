@@ -27,13 +27,13 @@
 #import "OTRSettingDetailViewController.h"
 #import "OTRAboutViewController.h"
 #import "OTRQRCodeViewController.h"
-#import <QuartzCore/QuartzCore.h>
+@import QuartzCore;
 #import "OTRConstants.h"
-#import "UserVoice.h"
+@import UserVoice;
 #import "OTRAccountTableViewCell.h"
 #import "UIActionSheet+ChatSecure.h"
 #import "OTRSecrets.h"
-@import YapDatabase.YapDatabaseView;
+@import YapDatabase;
 #import "OTRDatabaseManager.h"
 #import "OTRDatabaseView.h"
 #import "OTRAccount.h"
@@ -44,20 +44,25 @@
 #import "OTRQRCodeActivity.h"
 #import "OTRBaseLoginViewController.h"
 #import "OTRXLFormCreator.h"
-#import <KVOController/NSObject+FBKVOController.h>
+#import "OTRViewSetting.h"
+#import "OTRDonateSetting.h"
+@import KVOController;
 #import "OTRInviteViewController.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 @import OTRAssets;
-#import "OTRLanguageManager.h"
+@import MobileCoreServices;
+
 #import "NSURL+ChatSecure.h"
 
 static NSString *const circleImageName = @"31-circle-plus-large.png";
 
-@interface OTRSettingsViewController () <UITableViewDataSource, UITableViewDelegate, OTRShareSettingDelegate>
+@interface OTRSettingsViewController () <UITableViewDataSource, UITableViewDelegate, OTRShareSettingDelegate, OTRYapViewHandlerDelegateProtocol,OTRSettingDelegate,OTRDonateSettingDelegate, UIPopoverPresentationControllerDelegate, OTRAttachmentPickerDelegate>
 
-@property (nonatomic, strong) YapDatabaseViewMappings *mappings;
-@property (nonatomic, strong) YapDatabaseConnection *databaseConnection;
+@property (nonatomic, strong) OTRYapViewHandler *viewHandler;
 @property (nonatomic, strong) UITableView *tableView;
+
+/** This is only non-nil during avatar picking */
+@property (nonatomic, nullable) OTRAttachmentPicker *avatarPicker;
 
 @end
 
@@ -67,8 +72,8 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 {
     if (self = [super init])
     {
-        self.title = SETTINGS_STRING;
-        self.settingsManager = [[OTRSettingsManager alloc] init];
+        self.title = SETTINGS_STRING();
+        _settingsManager = [[OTRSettingsManager alloc] init];
     }
     return self;
 }
@@ -77,25 +82,10 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 {
     [super viewDidLoad];
     
-    //Make sure allAccountsDatabaseView is registered
-    [OTRDatabaseView registerAllAccountsDatabaseView];
-    
     //User main thread database connection
-    self.databaseConnection = [[OTRDatabaseManager sharedInstance] newConnection];
-    self.databaseConnection.name = NSStringFromClass([self class]);
-    [self.databaseConnection beginLongLivedReadTransaction];
-    
-    //Create mappings from allAccountsDatabaseView
-    self.mappings = [[YapDatabaseViewMappings alloc] initWithGroups:@[OTRAllAccountGroup] view:OTRAllAccountDatabaseViewExtensionName];
-    
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction){
-        [self.mappings updateWithTransaction:transaction];
-    }];
-    
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(yapDatabaseModified:)
-                                                 name:YapDatabaseModifiedNotification
-                                               object:nil];
+    self.viewHandler = [[OTRYapViewHandler alloc] initWithDatabaseConnection:[OTRDatabaseManager sharedInstance].longLivedReadOnlyConnection databaseChangeNotificationName:[DatabaseNotificationName LongLivedTransactionChanges]];
+    self.viewHandler.delegate = self;
+    [self.viewHandler setup:OTRAllAccountDatabaseViewExtensionName groups:@[OTRAllAccountGroup]];
     
     
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleGrouped];
@@ -106,9 +96,14 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
     [self.view addSubview:self.tableView];
     [self.tableView registerClass:[OTRAccountTableViewCell class] forCellReuseIdentifier:[OTRAccountTableViewCell cellIdentifier]];
     
-    UIBarButtonItem *aboutButton = [[UIBarButtonItem alloc] initWithImage:[UIImage imageNamed:@"OTRInfoIcon" inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil] style:UIBarButtonItemStylePlain target:self action:@selector(showAboutScreen)];
-
-    self.navigationItem.rightBarButtonItem = aboutButton;
+    NSBundle *bundle = [OTRAssets resourcesBundle];
+    UINib *nib = [UINib nibWithNibName:[XMPPAccountCell cellIdentifier] bundle:bundle];
+    [self.tableView registerNib:nib forCellReuseIdentifier:[XMPPAccountCell cellIdentifier]];
+    
+    
+    UIButton* infoButton = [UIButton buttonWithType:UIButtonTypeInfoLight];
+    [infoButton addTarget:self action:@selector(showAboutScreen:) forControlEvents:UIControlEventTouchUpInside];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithCustomView:infoButton];
     
     ////// KVO //////
     __weak typeof(self)weakSelf = self;
@@ -124,10 +119,14 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
-    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(serverCheckUpdate:) name:ServerCheck.UpdateNotificationName object:nil];
     self.tableView.frame = self.view.bounds;
     [self.settingsManager populateSettings];
     [self.tableView reloadData];
+}
+
+- (void) serverCheckUpdate:(NSNotification*)notification {
+    [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0] withRowAnimation:UITableViewRowAnimationFade];
 }
 
 - (BOOL)shouldAutorotateToInterfaceOrientation:(UIInterfaceOrientation)interfaceOrientation
@@ -140,14 +139,9 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
     }
 }
 
-- (OTRAccount *)accountAtIndexPath:(NSIndexPath *)indexPath
+- (OTRXMPPAccount *)accountAtIndexPath:(NSIndexPath *)indexPath
 {
-    __block OTRAccount *account = nil;
-    [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
-        
-        account = [[transaction extension:OTRAllAccountDatabaseViewExtensionName] objectAtIndexPath:indexPath withMappings:self.mappings];
-    }];
-    
+    OTRXMPPAccount *account = [self.viewHandler object:indexPath];
     return account;
 }
 
@@ -155,7 +149,7 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath
 {
-    if (indexPath.section == 0 && indexPath.row != [self.mappings numberOfItemsInSection:0])
+    if (indexPath.section == 0 && indexPath.row != [self.viewHandler.mappings numberOfItemsInSection:0])
     {
         return UITableViewCellEditingStyleDelete;
     }
@@ -170,32 +164,40 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
     if (indexPath.section == 0) { // Accounts 
         static NSString *addAccountCellIdentifier = @"addAccountCellIdentifier";
         UITableViewCell * cell = nil;
-        if (indexPath.row == [self.mappings numberOfItemsInSection:indexPath.section]) {
+        if (indexPath.row == [self.viewHandler.mappings numberOfItemsInSection:indexPath.section]) {
             cell = [tableView dequeueReusableCellWithIdentifier:addAccountCellIdentifier];
             if (cell == nil) {
                 cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:addAccountCellIdentifier];
-                cell.textLabel.text = NEW_ACCOUNT_STRING;
+                cell.textLabel.text = NEW_ACCOUNT_STRING();
                 cell.imageView.image = [UIImage imageNamed:circleImageName inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil];
                 cell.detailTextLabel.text = nil;
             }
         }
         else {
-            OTRAccount *account = [self accountAtIndexPath:indexPath];
-            OTRAccountTableViewCell *accountCell = (OTRAccountTableViewCell*)[tableView dequeueReusableCellWithIdentifier:[OTRAccountTableViewCell cellIdentifier] forIndexPath:indexPath];
-            [accountCell.shareButton addTarget:self action:@selector(accountCellShareButtonPressed:) forControlEvents:UIControlEventTouchUpInside];
+            OTRXMPPAccount *account = [self accountAtIndexPath:indexPath];
+            OTRXMPPManager *xmpp = (OTRXMPPManager*)[[OTRProtocolManager sharedInstance] protocolForAccount:account];
+            XMPPAccountCell *accountCell = [tableView dequeueReusableCellWithIdentifier:[XMPPAccountCell cellIdentifier] forIndexPath:indexPath];
+            [accountCell setAppearanceWithAccount:account];
             
-            [accountCell setAccount:account];
-            
-            if ([[OTRProtocolManager sharedInstance] existsProtocolForAccount:account]) {
-                id <OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:account];
-                if (protocol) {
-                    [accountCell setConnectedText:[protocol connectionStatus]];
+            NSMutableString *labelString = [NSMutableString stringWithString:accountCell.accountNameLabel.text];
+            if (xmpp.lastConnectionError) {
+                [labelString appendString:@" ❌"];
+            } else if (xmpp.serverCheck.getCombinedPushStatus == ServerCheckPushStatusBroken) {
+                if ([OTRBranding shouldShowPushWarning]) {
+                    [labelString appendString:@"  ⚠️"];
                 }
             }
-            else {
-                [accountCell setConnectedText:OTRProtocolConnectionStatusDisconnected];
-            }
+            accountCell.accountNameLabel.text = labelString;
 
+            accountCell.infoButtonAction = ^(UITableViewCell *cell, id sender) {
+                [self showAccountDetailsView:account];
+            };
+            accountCell.avatarButtonAction = ^(UITableViewCell *cell, id sender) {
+                self.avatarPicker = [[OTRAttachmentPicker alloc] initWithParentViewController:self delegate:self];
+                self.avatarPicker.tag = account;
+                [self.avatarPicker showAlertControllerFromSourceView:cell withCompletion:nil];
+            };
+            accountCell.selectionStyle = UITableViewCellSelectionStyleNone;
             cell = accountCell;
         }
         return cell;
@@ -230,13 +232,20 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)sectionIndex
 {
     if (sectionIndex == 0) {
-        return [self.mappings numberOfItemsInSection:0]+1;
+        return [self.viewHandler.mappings numberOfItemsInSection:0]+1;
     }
     return [self.settingsManager numberOfSettingsInSection:sectionIndex];
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    if (indexPath.section == 0) {
+        if (indexPath.row == [self.viewHandler.mappings numberOfItemsInSection:indexPath.section]) {
+            return 50.0;
+        } else {
+            return [XMPPAccountCell cellHeight];
+        }
+    }
     return 50.0;
 }
 
@@ -248,27 +257,14 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     if (indexPath.section == 0) { // Accounts
-        if (indexPath.row == [self.mappings numberOfItemsInSection:0]) {
+        if (indexPath.row == [self.viewHandler.mappings numberOfItemsInSection:0]) {
             [self addAccount:[tableView cellForRowAtIndexPath:indexPath]];
-        } else {
-            OTRAccount *account = [self accountAtIndexPath:indexPath];
-            
-            BOOL connected = [[OTRProtocolManager sharedInstance] isAccountConnected:account];
-            if (!connected) {
-                OTRBaseLoginViewController *baseLoginViewController = [OTRBaseLoginViewController loginViewControllerForAccount:account];
-                baseLoginViewController.showsCancelButton = YES;
-                UINavigationController *navigationController = [[UINavigationController alloc] initWithRootViewController:baseLoginViewController];
-                navigationController.modalPresentationStyle = UIModalPresentationFormSheet;
-                [self presentViewController:navigationController animated:YES completion:nil];
-            } else {
-                [self logoutAccount:account sender:[tableView cellForRowAtIndexPath:indexPath]];
-            }
         }
     } else {
         OTRSetting *setting = [self.settingsManager settingAtIndexPath:indexPath];
         OTRSettingActionBlock actionBlock = setting.actionBlock;
         if (actionBlock) {
-            actionBlock();
+            actionBlock(self);
         }
     }
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
@@ -283,8 +279,8 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
     {
         OTRAccount *account = [self accountAtIndexPath:indexPath];
         
-        UIAlertAction * cancelButtonItem = [UIAlertAction actionWithTitle:CANCEL_STRING style:UIAlertActionStyleCancel handler:nil];
-        UIAlertAction * okButtonItem = [UIAlertAction actionWithTitle:OK_STRING style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
+        UIAlertAction * cancelButtonItem = [UIAlertAction actionWithTitle:CANCEL_STRING() style:UIAlertActionStyleCancel handler:nil];
+        UIAlertAction * okButtonItem = [UIAlertAction actionWithTitle:OK_STRING() style:UIAlertActionStyleDestructive handler:^(UIAlertAction * _Nonnull action) {
             
             if( [[OTRProtocolManager sharedInstance] isAccountConnected:account])
             {
@@ -295,8 +291,8 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
             [OTRAccountsManager removeAccount:account];
         }];
         
-        NSString * message = [NSString stringWithFormat:@"%@ %@?", DELETE_ACCOUNT_MESSAGE_STRING, account.username];
-        UIAlertController *alert = [UIAlertController alertControllerWithTitle:DELETE_ACCOUNT_TITLE_STRING message:message preferredStyle:UIAlertControllerStyleAlert];
+        NSString * message = [NSString stringWithFormat:@"%@ %@?", DELETE_ACCOUNT_MESSAGE_STRING(), account.username];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:DELETE_ACCOUNT_TITLE_STRING() message:message preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:cancelButtonItem];
         [alert addAction:okButtonItem];
         [self presentViewController:alert animated:YES completion:nil];
@@ -305,7 +301,19 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 
 #pragma - mark Other Methods
 
--(void)showAboutScreen
+- (void) showAccountDetailsView:(OTRXMPPAccount*)account {
+    id<OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:account];
+    OTRXMPPManager *xmpp = nil;
+    if ([protocol isKindOfClass:[OTRXMPPManager class]]) {
+        xmpp = (OTRXMPPManager*)protocol;
+    }
+    OTRAccountDetailViewController *detailVC = [[OTRAppDelegate appDelegate].theme accountDetailViewControllerForAccount:account xmpp:xmpp longLivedReadConnection:[OTRDatabaseManager sharedInstance].longLivedReadOnlyConnection writeConnection:[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection];
+    UINavigationController *navigationController = [[UINavigationController alloc] initWithRootViewController:detailVC];
+    navigationController.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:navigationController animated:YES completion:nil];
+}
+
+-(void)showAboutScreen:(id)sender
 {
     OTRAboutViewController *aboutController = [[OTRAboutViewController alloc] init];
     
@@ -320,39 +328,11 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
     
 }
 
-- (void)logoutAccount:(OTRAccount *)account sender:(id)sender
-{
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    UIAlertAction *cancelAlertAction = [UIAlertAction actionWithTitle:CANCEL_STRING style:UIAlertActionStyleCancel handler:nil];
-    UIAlertAction *logoutAlertAction = [UIAlertAction actionWithTitle:LOGOUT_STRING style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
-        id<OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:account];
-        [protocol disconnect];
-    }];
-    
-    UIAlertAction *shareAction = [UIAlertAction actionWithTitle:SHARE_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [ShareController shareAccount:account sender:sender viewController:self];
-    }];
-    
-    [alertController addAction:shareAction];
-    [alertController addAction:logoutAlertAction];
-    [alertController addAction:cancelAlertAction];
-    
-    if ([sender isKindOfClass:[UIView class]]) {
-        UIView *senderView = (UIView *)sender;
-        alertController.popoverPresentationController.sourceRect = senderView.bounds;
-        alertController.popoverPresentationController.sourceView = senderView;
-    }
-    
-    [self presentViewController:alertController animated:YES completion:nil];
-}
-
 - (void) addAccount:(id)sender {
     UIStoryboard *onboardingStoryboard = [UIStoryboard storyboardWithName:@"Onboarding" bundle:[OTRAssets resourcesBundle]];
     UINavigationController *welcomeNavController = [onboardingStoryboard instantiateInitialViewController];
-    OTRWelcomeViewController *welcomeViewController = welcomeNavController.viewControllers[0];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:welcomeViewController];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:nav animated:YES completion:nil];
+    welcomeNavController.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:welcomeNavController animated:YES completion:nil];
 }
 
 - (NSIndexPath *)indexPathForSetting:(OTRSetting *)setting
@@ -394,33 +374,31 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 }
 
 - (void) donateSettingPressed:(OTRDonateSetting *)setting {
-#warning Hardcoded Whitelabel Value
-    NSURL *paypalURL = [NSURL URLWithString:@"https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=6YFSLLQGDZFXY"];
-#warning Hardcoded Whitelabel Value
-    NSURL *bitcoinURL = [NSURL URLWithString:@"https://coinbase.com/checkouts/0a35048913df24e0ec3d586734d456d7"];
-    
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:DONATE_MESSAGE_STRING message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    UIAlertAction *paypalAlertAction = [UIAlertAction actionWithTitle:@"PayPal" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [[UIApplication sharedApplication] openURL:paypalURL];
-    }];
-    
-    UIAlertAction *bitcoinAlertAction = [UIAlertAction actionWithTitle:@"Bitcoin" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        [[UIApplication sharedApplication] openURL:bitcoinURL];
-    }];
-    
-    UIAlertAction *cancelAlertAction = [UIAlertAction actionWithTitle:CANCEL_STRING style:UIAlertActionStyleCancel handler:nil];
-    
-    [alertController addAction:paypalAlertAction];
-    [alertController addAction:bitcoinAlertAction];
-    [alertController addAction:cancelAlertAction];
-    
-    UITableViewCell *cell = [self.tableView cellForRowAtIndexPath:[self indexPathForSetting:setting]];
-    
-    alertController.popoverPresentationController.sourceView = cell;
-    alertController.popoverPresentationController.sourceRect = cell.bounds;
-    
-    [self presentViewController:alertController animated:YES completion:nil];
+    [PurchaseViewController showFrom:self];
+}
+
+#pragma - mark OTRAttachmentPickerDelegate
+
+- (void)attachmentPicker:(OTRAttachmentPicker *)attachmentPicker gotPhoto:(UIImage *)photo withInfo:(NSDictionary *)info {
+    self.avatarPicker = nil;
+    OTRXMPPAccount *account = attachmentPicker.tag;
+    if (![account isKindOfClass:OTRXMPPAccount.class]) {
+        return;
+    }
+    OTRXMPPManager *xmpp = (OTRXMPPManager*)[OTRProtocolManager.shared protocolForAccount:account];
+    if (![xmpp isKindOfClass:OTRXMPPManager.class]) {
+        return;
+    }
+    [xmpp setAvatar:photo completion:nil];
+}
+
+- (void)attachmentPicker:(OTRAttachmentPicker *)attachmentPicker gotVideoURL:(NSURL *)videoURL {
+    self.avatarPicker = nil;
+}
+
+- (NSArray <NSString *>*)attachmentPicker:(OTRAttachmentPicker *)attachmentPicker preferredMediaTypesForSource:(UIImagePickerControllerSourceType)source
+{
+    return @[(NSString*)kUTTypeImage];
 }
 
 #pragma - mark OTRShareSettingDelegate Method
@@ -444,11 +422,10 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 #pragma mark OTRFeedbackSettingDelegate method
 
 - (void) presentUserVoiceViewForSetting:(OTRSetting *)setting {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:SHOW_USERVOICE_STRING message:nil preferredStyle:UIAlertControllerStyleActionSheet];
-    UIAlertAction *cancelAlertAction = [UIAlertAction actionWithTitle:CANCEL_STRING style:UIAlertActionStyleCancel handler:nil];
-    UIAlertAction *showUserVoiceAlertAction = [UIAlertAction actionWithTitle:OK_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-#warning Hardcoded Whitelabel Value
-        UVConfig *config = [UVConfig configWithSite:@"chatsecure.uservoice.com"];
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:SHOW_USERVOICE_STRING() message:nil preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertAction *cancelAlertAction = [UIAlertAction actionWithTitle:CANCEL_STRING() style:UIAlertActionStyleCancel handler:nil];
+    UIAlertAction *showUserVoiceAlertAction = [UIAlertAction actionWithTitle:OK_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        UVConfig *config = [UVConfig configWithSite:[OTRBranding userVoiceSite]];
         [UserVoice presentUserVoiceInterfaceForParentViewController:self andConfig:config];
     }];
     
@@ -465,20 +442,16 @@ static NSString *const circleImageName = @"31-circle-plus-large.png";
 
 #pragma - mark YapDatabse Methods
 
-- (void)yapDatabaseModified:(NSNotification *)notification
+- (void)didSetupMappings:(OTRYapViewHandler *)handler
 {
-    NSArray *notifications = [self.databaseConnection beginLongLivedReadTransaction];
-    
-    // Process the notification(s),
-    // and get the change-set(s) as applies to my view and mappings configuration.
-    
-    NSArray *sectionChanges = nil;
-    NSArray *rowChanges = nil;
-    
-    [[self.databaseConnection ext:OTRAllAccountDatabaseViewExtensionName] getSectionChanges:&sectionChanges
-                                                                                 rowChanges:&rowChanges
-                                                                           forNotifications:notifications
-                                                                               withMappings:self.mappings];
+    [self.tableView reloadData];
+}
+
+- (void)didReceiveChanges:(OTRYapViewHandler *)handler sectionChanges:(NSArray<YapDatabaseViewSectionChange *> *)sectionChanges rowChanges:(NSArray<YapDatabaseViewRowChange *> *)rowChanges
+{
+    if ([rowChanges count] == 0) {
+        return;
+    }
     
     [self.tableView beginUpdates];
     

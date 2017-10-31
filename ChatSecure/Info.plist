@@ -15,7 +15,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.2.4</string>
+	<string>4.2.1</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
 	<key>CFBundleURLTypes</key>
@@ -35,7 +35,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>38</string>
+	<string>106</string>
 	<key>FacebookAppID</key>
 	<string>447241325394334</string>
 	<key>FacebookDisplayName</key>
@@ -43,12 +43,18 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<true/>
 	<key>ITSEncryptionExportComplianceCode</key>
-	<string>847d2ff9-25b3-49a6-bb93-bbd3cf4b9881</string>
+	<string>51d17d3e-5e07-49ad-a308-9625d81e411f</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>twitter</string>
+		<string>fb</string>
+		<string>googlechrome-x-callback</string>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
+		<key>NSAllowsLocalNetworking</key>
 		<true/>
 		<key>NSExceptionDomains</key>
 		<dict>
@@ -59,11 +65,17 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Access to the camera is required to send photos and scan QR codes.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Access to the microphone is needed to send voice messages.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Access to the photo library is required to send your existing photos.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>FontAwesome.ttf</string>
+		<string>OTRResources.bundle/MaterialIcons-Regular.ttf</string>
+		<string>OTRResources.bundle/ios-icon-font.ttf</string>
 	</array>
 	<key>UIBackgroundModes</key>
 	<array>

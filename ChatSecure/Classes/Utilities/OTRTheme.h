@@ -6,33 +6,45 @@
 //  Copyright (c) 2015 Chris Ballinger. All rights reserved.
 //
 
-#import <Foundation/Foundation.h>
-#import <UIKit/UIKit.h>
+@import Foundation;
+@import UIKit;
 
+@class OTRAccount;
+@class OTRXMPPAccount;
+@class OTRXMPPManager;
+@class YapDatabaseConnection;
+@class JSQMessagesViewController;
+
+NS_ASSUME_NONNULL_BEGIN
 @interface OTRTheme : NSObject
 
 @property (nonatomic, strong) UIColor *mainThemeColor;
 @property (nonatomic, strong) UIColor *lightThemeColor;
-
 @property (nonatomic, strong) UIColor *buttonLabelColor;
 
 /** Set global app appearance via UIAppearance */
 - (void) setupGlobalTheme;
 
-/** Override this in subclass to use a different conversation view controller class */
-- (Class) conversationViewControllerClass;
+/** Returns new instance. Override this in subclass to use a different conversation view controller class */
+- (__kindof UIViewController*) conversationViewController;
 
-/** Override this in subclass to use a different message view controller class */
-- (Class) messagesViewControllerClass;
+/** Returns new instance. Override this in subclass to use a different message view controller class */
+- (__kindof JSQMessagesViewController *) messagesViewController;
 
-/** Override this in subclass to use a different group message view controller class */
-- (Class) groupMessagesViewControllerClass;
+/** Returns new instance. Override this in subclass to use a different settings view controller class */
+- (__kindof UIViewController *) settingsViewController;
 
-/** Override this in subclass to use a different compose view controller class */
-- (Class) composeViewControllerClass;
+/** Returns new instance. Override this in subclass to use a different compose view controller class */
+- (__kindof UIViewController *) composeViewController;
 
-/** Override this in subclass to use a different invite view controller class */
-- (Class) inviteViewControllerClass;
+/** Returns new instance. Override this in subclass to use a different invite view controller class */
+- (__kindof UIViewController* ) inviteViewControllerForAccount:(OTRAccount*)account;
 
+/** Returns new instance. Override this in subclass to use a different account detail view controller class */
+- (__kindof UIViewController* ) accountDetailViewControllerForAccount:(OTRXMPPAccount*)account xmpp:(OTRXMPPManager * _Nonnull)xmpp longLivedReadConnection:(YapDatabaseConnection * _Nonnull)longLivedReadConnection writeConnection:(YapDatabaseConnection * _Nonnull)writeConnection;
+
+/** Override this to disable OMEMO message encryption. default: YES */
+- (BOOL) enableOMEMO;
 
 @end
+NS_ASSUME_NONNULL_END

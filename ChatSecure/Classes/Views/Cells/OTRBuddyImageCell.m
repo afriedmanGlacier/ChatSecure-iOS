@@ -10,7 +10,7 @@
 #import "OTRBuddy.h"
 #import "OTRImages.h"
 #import "OTRColors.h"
-#import "PureLayout.h"
+@import PureLayout;
 @import OTRAssets;
 
 const CGFloat OTRBuddyImageCellPadding = 12.0;
@@ -33,7 +33,7 @@ const CGFloat OTRBuddyImageCellPadding = 12.0;
         self.avatarImageView = [[UIImageView alloc] initWithImage:[self defaultImage]];
         self.avatarImageView.translatesAutoresizingMaskIntoConstraints = NO;
         CALayer *cellImageLayer = self.avatarImageView.layer;
-        [cellImageLayer setBorderWidth:2.0];
+        cellImageLayer.borderWidth = 0.0;
         
         [cellImageLayer setMasksToBounds:YES];
         [cellImageLayer setBorderColor:[self.imageViewBorderColor CGColor]];
@@ -68,6 +68,11 @@ const CGFloat OTRBuddyImageCellPadding = 12.0;
         self.avatarImageView.image = [self defaultImage];
     }
     UIColor *statusColor =  [OTRColors colorWithStatus:[thread currentStatus]];
+    if (statusColor) {
+        self.avatarImageView.layer.borderWidth = 1.5;
+    } else {
+        self.avatarImageView.layer.borderWidth = 0.0;
+    }
     self.imageViewBorderColor = statusColor;
     [self.contentView setNeedsUpdateConstraints];
 }
@@ -86,6 +91,11 @@ const CGFloat OTRBuddyImageCellPadding = 12.0;
         self.addedConstraints = YES;
     }
     [super updateConstraints];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self.avatarImageView.layer setCornerRadius:(self.contentView.frame.size.height-2*OTRBuddyImageCellPadding)/2.0];
 }
 
 + (NSString *)reuseIdentifier

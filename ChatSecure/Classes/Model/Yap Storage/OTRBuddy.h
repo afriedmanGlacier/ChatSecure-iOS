@@ -8,71 +8,78 @@
 
 #import "OTRYapDatabaseObject.h"
 #import "OTRThreadOwner.h"
+#import "OTRUserInfoProfile.h"
 @import UIKit;
 
-typedef NS_ENUM(int, OTRChatState) {
-    kOTRChatStateUnknown   = 0,
-    kOTRChatStateActive    = 1,
-    kOTRChatStateComposing = 2,
-    kOTRChatStatePaused    = 3,
-    kOTRChatStateInactive  = 4,
-    kOTRChatStateGone      = 5
+typedef NS_ENUM(NSUInteger, OTRChatState) {
+    OTRChatStateUnknown   = 0,
+    OTRChatStateActive    = 1,
+    OTRChatStateComposing = 2,
+    OTRChatStatePaused    = 3,
+    OTRChatStateInactive  = 4,
+    OTRChatStateGone      = 5
+};
+
+/** These are the preferences for a buddy on how to send a message. Related OTRMessageTransportSecurity*/
+typedef NS_ENUM(NSUInteger, OTRSessionSecurity) {
+    OTRSessionSecurityBestAvailable = 0,
+    OTRSessionSecurityPlaintextOnly = 1,
+    OTRSessionSecurityPlaintextWithOTR = 2,
+    OTRSessionSecurityOTR = 3,
+    OTRSessionSecurityOMEMO = 4,
+    /** This is deprecated, this option will now only use OMEMO */
+    OTRSessionSecurityOMEMOandOTR = 5
 };
 
 
 @class OTRAccount, OTRMessage;
 
-extern const struct OTRBuddyAttributes {
-	__unsafe_unretained NSString *username;
-	__unsafe_unretained NSString *displayName;
-	__unsafe_unretained NSString *composingMessageString;
-	__unsafe_unretained NSString *statusMessage;
-	__unsafe_unretained NSString *chatState;
-    __unsafe_unretained NSString *lastSentChatState;
-    __unsafe_unretained NSString *status;
-    __unsafe_unretained NSString *lastMessageDate;
-    __unsafe_unretained NSString *avatarData;
-    __unsafe_unretained NSString *encryptionStatus;
-} OTRBuddyAttributes;
 
-@interface OTRBuddy : OTRYapDatabaseObject <YapDatabaseRelationshipNode, OTRThreadOwner>
+@interface OTRBuddy : OTRYapDatabaseObject <YapDatabaseRelationshipNode, OTRThreadOwner, OTRUserInfoProfile>
 
-@property (nonatomic, strong) NSString *username;
-@property (nonatomic, strong) NSString *displayName;
-@property (nonatomic, strong) NSString *composingMessageString;
-@property (nonatomic, strong) NSString *statusMessage;
-@property (nonatomic) OTRChatState chatState;
-@property (nonatomic) OTRChatState lastSentChatState;
-@property (nonatomic) OTRThreadStatus status;
+@property (nonatomic, strong, nonnull) NSString *username;
+@property (nonatomic, strong, readwrite, nonnull) NSString *displayName;
+@property (nonatomic, strong, nullable) NSString *composingMessageString;
 
-/** the date last message was received for buddy. also used by incoming/outgoing subscription requests to force buddy to appear in conversation view */
-@property (nonatomic, strong) NSDate *lastMessageDate;
+// Dynamic properties backed by in-memory cache
+// You don't have to save the object when setting these
+// When setting these properties use OTRBuddyCache methods
+@property (atomic, strong, nullable, readonly) NSString *statusMessage;
+@property (atomic, readonly) OTRChatState chatState;
+@property (atomic, readonly) OTRChatState lastSentChatState;
+@property (atomic, readonly) OTRThreadStatus status;
+
+/** uniqueId of last incoming or outgoing OTRMessage. @warn ⚠️ This is no longer used for fetching with lastMessageWithTransaction: and may be invalid, but is being kept around due to a hack to force-show new threads that are empty. */
+@property (nonatomic, strong, nullable) NSString *lastMessageId;
+
+/** User can choose a preferred security method e.g. plaintext, OTR, OMEMO. If undefined, best available option should be chosen elsewhere. OMEMO > OTR > Plaintext */
+@property (nonatomic, readwrite) OTRSessionSecurity preferredSecurity;
 
 /**
  * Setting this value does a comparison of against the previously value
  * to invalidate the OTRImages cache.
  */
-@property (nonatomic, strong) NSData *avatarData;
+@property (nonatomic, strong, nullable) NSData *avatarData;
 
-@property (nonatomic, strong) NSString *accountUniqueId;
+@property (nonatomic, strong, nonnull) NSString *accountUniqueId;
 
-- (OTRMessage *)lastMessageWithTransaction:(YapDatabaseReadTransaction *)transaction;
-- (OTRAccount*)accountWithTransaction:(YapDatabaseReadTransaction *)transaction;
-- (void)updateLastMessageDateWithTransaction:(YapDatabaseReadTransaction *)transaction;
+- (nullable id <OTRMessageProtocol>)lastMessageWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction;
+- (nullable OTRAccount*)accountWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction;
 
-+ (instancetype)fetchBuddyForUsername:(NSString *)username
-                          accountName:(NSString *)accountName
-                          transaction:(YapDatabaseReadTransaction *)transaction;
+/** Translates the preferredSecurity value first if set, otherwise bestTransportSecurityWithTransaction: */
+- (OTRMessageTransportSecurity)preferredTransportSecurityWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction;
+/** Returns the best OTRMessageTransportSecurity that this buddy is capable */
+- (OTRMessageTransportSecurity)bestTransportSecurityWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction;
 
-+ (instancetype)fetchBuddyWithUsername:(NSString *)username
-                   withAccountUniqueId:(NSString *)accountUniqueId
-                           transaction:(YapDatabaseReadTransaction *)transaction;
++ (nullable instancetype)fetchBuddyForUsername:(nonnull NSString *)username
+                          accountName:(nonnull NSString *)accountName
+                          transaction:(nonnull YapDatabaseReadTransaction *)transaction;
 
++ (nullable instancetype)fetchBuddyWithUsername:(nonnull NSString *)username
+                   withAccountUniqueId:(nonnull NSString *)accountUniqueId
+                           transaction:(nonnull YapDatabaseReadTransaction *)transaction;
 
-+ (void)resetAllChatStatesWithTransaction:(YapDatabaseReadWriteTransaction *)transaction;
-+ (void)resetAllBuddyStatusesWithTransaction:(YapDatabaseReadWriteTransaction *)transaction;
-
-
-
+/** Excluded properties for Mantle */
++ (nonnull NSSet<NSString*>*) excludedProperties;
 
 @end

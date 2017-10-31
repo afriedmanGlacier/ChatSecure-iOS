@@ -13,15 +13,16 @@
 #import "OTRXMPPError.h"
 #import "OTRDatabaseManager.h"
 #import "OTRAccount.h"
-#import "MBProgressHUD.h"
+@import MBProgressHUD;
 #import "OTRXLFormCreator.h"
 #import <ChatSecureCore/ChatSecureCore-Swift.h>
 #import "OTRXMPPServerInfo.h"
 #import "OTRXMPPAccount.h"
 @import OTRAssets;
-#import "OTRLanguageManager.h"
+
 #import "OTRInviteViewController.h"
 #import "NSString+ChatSecure.h"
+#import "XMPPServerInfoCell.h"
 
 static NSUInteger kOTRMaxLoginAttempts = 5;
 
@@ -37,6 +38,8 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+    [OTRUsernameCell registerCellClass:[OTRUsernameCell defaultRowDescriptorType]];
+    
     self.loginAttempts = 0;
     
     UIImage *checkImage = [UIImage imageNamed:@"ic-check" inBundle:[OTRAssets resourcesBundle] compatibleWithTraitCollection:nil];
@@ -45,7 +48,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     self.navigationItem.rightBarButtonItem = checkButton;
     
     if (self.readOnly) {
-        self.title = ACCOUNT_STRING;
+        self.title = ACCOUNT_STRING();
     }
 }
 
@@ -59,7 +62,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     
     [self.navigationController setNavigationBarHidden:NO animated:animated];
     [self.tableView reloadData];
-    [self.createLoginHandler moveAccountValues:self.account intoForm:self.form];
+    [self.loginHandler moveAccountValues:self.account intoForm:self.form];
     
     // We need to refresh the username row with the default selected server
     [self updateUsernameRow];
@@ -68,7 +71,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
 - (void)setAccount:(OTRAccount *)account
 {
     _account = account;
-    [self.createLoginHandler moveAccountValues:self.account intoForm:self.form];
+    [self.loginHandler moveAccountValues:self.account intoForm:self.form];
 }
 
 - (void) cancelButtonPressed:(id)sender {
@@ -84,18 +87,17 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     self.existingAccount = (self.account != nil);
     if ([self validForm]) {
         self.form.disabled = YES;
-        [MBProgressHUD showHUDAddedTo:self.view animated:YES];
+        MBProgressHUD *hud = [MBProgressHUD showHUDAddedTo:self.view animated:YES];
         self.navigationItem.rightBarButtonItem.enabled = NO;
         self.navigationItem.leftBarButtonItem.enabled = NO;
         self.navigationItem.backBarButtonItem.enabled = NO;
 
 		__weak __typeof__(self) weakSelf = self;
         self.loginAttempts += 1;
-        [self.createLoginHandler performActionWithValidForm:self.form account:self.account progress:^(NSInteger progress, NSString *summaryString) {
-            __typeof__(self) strongSelf = weakSelf;
+        [self.loginHandler performActionWithValidForm:self.form account:self.account progress:^(NSInteger progress, NSString *summaryString) {
             NSLog(@"Tor Progress %d: %@", (int)progress, summaryString);
-            [[MBProgressHUD HUDForView:strongSelf.view] setProgress:progress/100.0f];
-            [[MBProgressHUD HUDForView:strongSelf.view] setLabelText:summaryString];
+            hud.progress = progress/100.0f;
+            hud.label.text = summaryString;
             
             } completion:^(OTRAccount *account, NSError *error) {
                 __typeof__(self) strongSelf = weakSelf;
@@ -103,39 +105,60 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
                 strongSelf.navigationItem.rightBarButtonItem.enabled = YES;
                 strongSelf.navigationItem.backBarButtonItem.enabled = YES;
                 strongSelf.navigationItem.leftBarButtonItem.enabled = YES;
-                [MBProgressHUD hideAllHUDsForView:self.view animated:YES];
+                [hud hideAnimated:YES];
                 if (error) {
-                    [strongSelf handleError:error];
-                } else {
-                    strongSelf.account = account;
-                    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                        [account saveWithTransaction:transaction];
+                    // Unset/remove password from keychain if account
+                    // is unsaved / doesn't already exist. This prevents the case
+                    // where there is a login attempt, but it fails and
+                    // the account is never saved. If the account is never
+                    // saved, it's impossible to delete the orphaned password
+                    __block BOOL accountExists = NO;
+                    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+                        accountExists = [transaction objectForKey:account.uniqueId inCollection:[[OTRAccount class] collection]] != nil;
                     }];
-                    
-                    // If push isn't enabled, prompt to enable it
-                    if ([PushController getPushPreference] == PushPreferenceEnabled) {
-                        [strongSelf pushInviteViewController];
-                    } else {
-                        UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"Onboarding" bundle:[OTRAssets resourcesBundle]];
-                        EnablePushViewController *pushVC = [storyboard instantiateViewControllerWithIdentifier:@"enablePush"];
-                        if (pushVC) {
-                            pushVC.account = account;
-                            [strongSelf.navigationController pushViewController:pushVC animated:YES];
-                        } else {
-                            [strongSelf pushInviteViewController];
-                        }
+                    if (!accountExists) {
+                        [account removeKeychainPassword:nil];
                     }
+                    [strongSelf handleError:error];
+                } else if (account) {
+                    self.account = account;
+                    [self handleSuccessWithNewAccount:account sender:sender];
                 }
         }];
     }
 }
 
-- (void) pushInviteViewController {
+- (void) handleSuccessWithNewAccount:(OTRAccount*)account sender:(id)sender {
+    NSParameterAssert(account != nil);
+    if (!account) { return; }
+    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+        [account saveWithTransaction:transaction];
+    }];
+    
+    if (self.existingAccount) {
+        [self dismissViewControllerAnimated:YES completion:nil];
+    }
+    
+    // If push isn't enabled, prompt to enable it
+    if ([PushController getPushPreference] == PushPreferenceEnabled) {
+        [self pushInviteViewController:sender];
+    } else {
+        UIStoryboard *storyboard = [UIStoryboard storyboardWithName:@"Onboarding" bundle:[OTRAssets resourcesBundle]];
+        EnablePushViewController *pushVC = [storyboard instantiateViewControllerWithIdentifier:@"enablePush"];
+        if (pushVC) {
+            pushVC.account = account;
+            [self.navigationController pushViewController:pushVC animated:YES];
+        } else {
+            [self pushInviteViewController:sender];
+        }
+    }
+}
+
+- (void) pushInviteViewController:(id)sender {
     if (self.existingAccount) {
         [self dismissViewControllerAnimated:YES completion:nil];
     } else {
-        OTRInviteViewController *inviteVC = [[[[OTRAppDelegate appDelegate].theme inviteViewControllerClass] alloc] init];
-        inviteVC.account = self.account;
+        UIViewController *inviteVC = [[OTRAppDelegate appDelegate].theme inviteViewControllerForAccount:self.account];
         [self.navigationController pushViewController:inviteVC animated:YES];
     }
 }
@@ -178,10 +201,15 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     [self updateFormRow:usernameRow];
 }
 
-#pragma mark Table View methods
+#pragma mark UITableView methods
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [super tableView:tableView cellForRowAtIndexPath:indexPath];
+    // This is required for the XMPPServerInfoCell buttons to work
+    if ([cell isKindOfClass:[XMPPServerInfoCell class]]) {
+        XMPPServerInfoCell *infoCell = (XMPPServerInfoCell*)cell;
+        [infoCell setupWithParentViewController:self];
+    }
     if (self.readOnly) {
         cell.userInteractionEnabled = NO;
     } else {
@@ -219,15 +247,16 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
 
 - (void)handleError:(NSError *)error
 {
-    //show xmpp erors, cert errors, tor errors, oauth errors.
-    if (error.code == OTRXMPPSSLError) {
-        NSData * certData = error.userInfo[OTRXMPPSSLCertificateDataKey];
-        NSString * hostname = error.userInfo[OTRXMPPSSLHostnameKey];
-        uint32_t trustResultType = [error.userInfo[OTRXMPPSSLTrustResultKey] unsignedIntValue];
-        
-        [self showCertWarningForCertificateData:certData withHostname:hostname trustResultType:trustResultType];
+    NSParameterAssert(error);
+    if (!error) {
+        return;
     }
-    else {
+    UIAlertController *certAlert = [UIAlertController certificateWarningAlertWithError:error saveHandler:^(UIAlertAction * _Nonnull action) {
+        [self loginButtonPressed:self.view];
+    }];
+    if (certAlert) {
+        [self presentViewController:certAlert animated:YES completion:nil];
+    } else {
         [self handleXMPPError:error];
     }
 }
@@ -242,7 +271,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
         NSString *value = [nicknameRow value];
         NSString *newValue = [NSString stringWithFormat:@"%@.%@",value,uniqueString];
         nicknameRow.value = newValue;
-        [self loginButtonPressed:nil];
+        [self loginButtonPressed:self.view];
         return;
     } else if (error.code == OTRXMPPXMLErrorPolicyViolation && self.loginAttempts < kOTRMaxLoginAttempts){
         // We've hit a policy violation. This occurs on duckgo because of special characters like russian alphabet.
@@ -256,23 +285,23 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
         
         if (![newValue isEqualToString:value]) {
             nicknameRow.value = newValue;
-            [self loginButtonPressed:nil];
+            [self loginButtonPressed:self.view];
             return;
         }
     }
     
-    [self showAlertViewWithTitle:ERROR_STRING message:XMPP_FAIL_STRING error:error];
+    [self showAlertViewWithTitle:ERROR_STRING() message:XMPP_FAIL_STRING() error:error];
 }
 
 - (void)showAlertViewWithTitle:(NSString *)title message:(NSString *)message error:(NSError *)error
 {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIAlertAction * okButtonItem = [UIAlertAction actionWithTitle:OK_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        UIAlertAction * okButtonItem = [UIAlertAction actionWithTitle:OK_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             
         }];
         UIAlertController * alertController = nil;
         if (error) {
-            UIAlertAction * infoButton = [UIAlertAction actionWithTitle:INFO_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            UIAlertAction * infoButton = [UIAlertAction actionWithTitle:INFO_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
                 NSString * errorDescriptionString = [NSString stringWithFormat:@"%@ : %@",[error domain],[error localizedDescription]];
                 NSString *xmlErrorString = error.userInfo[OTRXMPPXMLErrorKey];
                 if (xmlErrorString) {
@@ -287,14 +316,14 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
                 }
                 
                 
-                UIAlertAction * copyButtonItem = [UIAlertAction actionWithTitle:COPY_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+                UIAlertAction * copyButtonItem = [UIAlertAction actionWithTitle:COPY_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
                     NSString * copyString = [NSString stringWithFormat:@"Domain: %@\nCode: %ld\nUserInfo: %@",[error domain],(long)[error code],[error userInfo]];
                     
                     UIPasteboard *pasteBoard = [UIPasteboard generalPasteboard];
                     [pasteBoard setString:copyString];
                 }];
                 
-                UIAlertController *alert = [UIAlertController alertControllerWithTitle:INFO_STRING message:errorDescriptionString preferredStyle:UIAlertControllerStyleAlert];
+                UIAlertController *alert = [UIAlertController alertControllerWithTitle:INFO_STRING() message:errorDescriptionString preferredStyle:UIAlertControllerStyleAlert];
                 [alert addAction:okButtonItem];
                 [alert addAction:copyButtonItem];
                 [self presentViewController:alert animated:YES completion:nil];
@@ -317,59 +346,34 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     });
 }
 
-
-- (void)showCertWarningForCertificateData:(NSData *)certData withHostname:(NSString *)hostname trustResultType:(SecTrustResultType)resultType {
-    
-    SecCertificateRef certificate = [OTRCertificatePinning certForData:certData];
-    NSString * fingerprint = [OTRCertificatePinning sha256FingerprintForCertificate:certificate];
-    NSString * message = [NSString stringWithFormat:@"%@\n\nSHA256\n%@",hostname,fingerprint];
-    
-    UIAlertController *certAlert = [UIAlertController alertControllerWithTitle:NEW_CERTIFICATE_STRING message:nil preferredStyle:UIAlertControllerStyleAlert];
-    
-    if (![OTRCertificatePinning publicKeyWithCertData:certData]) {
-        //no public key not able to save because won't be able evaluate later
-        
-        message = [message stringByAppendingString:[NSString stringWithFormat:@"\n\nX %@",PUBLIC_KEY_ERROR_STRING]];
-        
-        UIAlertAction *action = [UIAlertAction actionWithTitle:OK_STRING style:UIAlertActionStyleCancel handler:nil];
-        [certAlert addAction:action];
-    }
-    else {
-        if (resultType == kSecTrustResultProceed || resultType == kSecTrustResultUnspecified) {
-            //#52A352
-            message = [message stringByAppendingString:[NSString stringWithFormat:@"\n\n✓ %@",VALID_CERTIFICATE_STRING]];
-        }
-        else {
-            NSString * sslErrorMessage = [OTRXMPPError errorStringWithTrustResultType:resultType];
-            message = [message stringByAppendingString:[NSString stringWithFormat:@"\n\nX %@",sslErrorMessage]];
-        }
-        
-        UIAlertAction *rejectAction = [UIAlertAction actionWithTitle:REJECT_STRING style:UIAlertActionStyleDestructive handler:nil];
-        [certAlert addAction:rejectAction];
-        
-        __weak __typeof__(self) weakSelf = self;
-        UIAlertAction *saveAction = [UIAlertAction actionWithTitle:SAVE_STRING style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            __typeof__(self) strongSelf = weakSelf;
-            [OTRCertificatePinning addCertificate:[OTRCertificatePinning certForData:certData] withHostName:hostname];
-            [strongSelf loginButtonPressed:nil];
-        }];
-        [certAlert addAction:saveAction];
-    }
-    
-    certAlert.message = message;
-    
-    [self presentViewController:certAlert animated:YES completion:nil];
-}
-
 #pragma - mark Class Methods
 
-+ (instancetype)loginViewControllerForAccount:(OTRAccount *)account
+- (instancetype) initWithAccount:(OTRAccount*)account
 {
-    OTRBaseLoginViewController *baseLoginViewController = [[self alloc] initWithForm:[OTRXLFormCreator formForAccount:account] style:UITableViewStyleGrouped];
-    baseLoginViewController.account = account;
-    baseLoginViewController.createLoginHandler = [OTRLoginHandler loginHandlerForAccount:account];
-    
-    return baseLoginViewController;
+    NSParameterAssert(account != nil);
+    XLFormDescriptor *form = [XLFormDescriptor existingAccountFormWithAccount:account];
+    if (self = [super initWithForm:form style:UITableViewStyleGrouped]) {
+        self.account = account;
+        self.loginHandler = [OTRLoginHandler loginHandlerForAccount:account];
+    }
+    return self;
+}
+
+- (instancetype) initWithExistingAccountType:(OTRAccountType)accountType {
+    XLFormDescriptor *form = [XLFormDescriptor existingAccountFormWithAccountType:accountType];
+    if (self = [super initWithForm:form style:UITableViewStyleGrouped]) {
+        self.loginHandler = [[OTRXMPPLoginHandler alloc] init];
+    }
+    return self;
+}
+
+/** This is for registering new accounts on a server */
+- (instancetype) initWithNewAccountType:(OTRAccountType)accountType {
+    XLFormDescriptor *form = [XLFormDescriptor registerNewAccountFormWithAccountType:accountType];
+    if (self = [super initWithForm:form style:UITableViewStyleGrouped]) {
+        self.loginHandler = [[OTRXMPPCreateAccountHandler alloc] init];
+    }
+    return self;
 }
 
 @end
