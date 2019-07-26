@@ -11,7 +11,6 @@
 @import MobileCoreServices;
 @import OTRAssets;
 #import "OTRUtilities.h"
-#import "UIActionSheet+ChatSecure.h"
 
 
 @interface OTRAttachmentPicker () <UINavigationControllerDelegate>
@@ -36,8 +35,7 @@
     UIAlertController *alertController = [UIAlertController alertControllerWithTitle:nil message:nil preferredStyle:UIAlertControllerStyleActionSheet];
     
     if ([UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeCamera]) {
-        UIAlertAction *takePhotoAction = [UIAlertAction actionWithTitle:USE_CAMERA_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-            [[UIApplication sharedApplication] setStatusBarHidden:YES withAnimation:UIStatusBarAnimationSlide];
+        UIAlertAction *takePhotoAction = [UIAlertAction actionWithTitle:USE_CAMERA_STRING() style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {            
             [self showImagePickerForSourceType:UIImagePickerControllerSourceTypeCamera];
         }];
         [alertController addAction:takePhotoAction];
@@ -112,7 +110,7 @@
             finalImage = originalImage;
         }
         
-        if ([self.delegate respondsToSelector:@selector(attachmentPicker:gotPhoto:withInfo:)]) {
+        if (finalImage && [self.delegate respondsToSelector:@selector(attachmentPicker:gotPhoto:withInfo:)]) {
             [self.delegate attachmentPicker:self gotPhoto:finalImage withInfo:info];
         }
         

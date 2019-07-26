@@ -8,6 +8,17 @@
 
 #import "OTRBuddyCache.h"
 #import "OTRDatabaseManager.h"
+#import "OTRYapDatabaseObject.h"
+#import "ChatSecureCoreCompat-Swift.h"
+
+@implementation OTRXMPPRoomRuntimeProperties
+- (instancetype)init {
+    if (self = [super init]) {
+        _onlineJids = [NSMutableArray array];
+    }
+    return self;
+}
+@end
 
 @interface OTRBuddyCache() {
     void *IsOnInternalQueueKey;
@@ -18,6 +29,7 @@
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSString*,NSDictionary<NSString*, NSNumber*>*> *threadStatuses;
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSString*,NSNumber*> *waitingForvCardTempFetch;
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSString*,NSDate*> *lastSeenDates;
+@property (nonatomic, strong, readonly) NSMutableDictionary<NSString*,OTRXMPPRoomRuntimeProperties*> *roomProperties;
 
 @property (nonatomic, strong, readonly) dispatch_queue_t queue;
 
@@ -47,6 +59,7 @@
         _threadStatuses = [NSMutableDictionary dictionary];
         _waitingForvCardTempFetch = [NSMutableDictionary dictionary];
         _lastSeenDates = [NSMutableDictionary dictionary];
+        _roomProperties = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -175,21 +188,21 @@
     }
 }
 
-- (void)setWaitingForvCardTempFetch:(BOOL)waiting forBuddy:(OTRXMPPBuddy*)buddy {
-    NSParameterAssert(buddy.uniqueId);
-    if (!buddy.uniqueId) { return; }
+- (void)setWaitingForvCardTempFetch:(BOOL)waiting forVcard:(id<OTRvCard>)vCard {
+    NSParameterAssert(vCard.uniqueId);
+    if (!vCard.uniqueId) { return; }
     [self performAsyncWrite:^{
-        [self.waitingForvCardTempFetch setObject:@(waiting) forKey:buddy.uniqueId];
-        [self touchBuddy:buddy];
+        [self.waitingForvCardTempFetch setObject:@(waiting) forKey:vCard.uniqueId];
+        [self touchObject:vCard];
     }];
 }
 
-- (BOOL)waitingForvCardTempFetchForBuddy:(OTRXMPPBuddy*)buddy {
-    NSParameterAssert(buddy.uniqueId);
-    if (!buddy.uniqueId) { return NO; }
+- (BOOL)waitingForvCardTempFetchForVcard:(id<OTRvCard>)vCard {
+    NSParameterAssert(vCard.uniqueId);
+    if (!vCard.uniqueId) { return NO; }
     __block BOOL waiting = NO;
     [self performSyncRead:^{
-        waiting = [self.waitingForvCardTempFetch objectForKey:buddy.uniqueId].boolValue;
+        waiting = [self.waitingForvCardTempFetch objectForKey:vCard.uniqueId].boolValue;
     }];
     return waiting;
 }
@@ -220,7 +233,44 @@
     }];
 }
 
-/** Clears everything for a buddy */
+- (OTRXMPPRoomRuntimeProperties *)runtimePropertiesForRoom:(OTRXMPPRoom *)room {
+    NSParameterAssert(room.uniqueId);
+    if (!room.uniqueId) { return nil; }
+    __block OTRXMPPRoomRuntimeProperties *properties = nil;
+    [self performSyncRead:^{
+        properties = [self.roomProperties objectForKey:room.uniqueId];
+        if (!properties) {
+            properties = [[OTRXMPPRoomRuntimeProperties alloc] init];
+            [self performAsyncWrite:^{
+                [self.roomProperties setObject:properties forKey:room.uniqueId];
+            }];
+        }
+    }];
+    return properties;
+}
+
+- (void)setJid:(NSString *)jid online:(BOOL)online inRoom:(OTRXMPPRoom *)room {
+    OTRXMPPRoomRuntimeProperties *properties = [self runtimePropertiesForRoom:room];
+    if (properties) {
+        if (online) {
+            if (![properties.onlineJids containsObject:jid]) {
+                [properties.onlineJids addObject:jid];
+            }
+        } else {
+            if ([properties.onlineJids containsObject:jid]) {
+                [properties.onlineJids removeObject:jid];
+            }
+        }
+    }
+}
+
+- (BOOL)jidOnline:(NSString *)jid inRoom:(OTRXMPPRoom *)room {
+    OTRXMPPRoomRuntimeProperties *properties = [self runtimePropertiesForRoom:room];
+    return (properties && [properties.onlineJids containsObject:jid]);
+}
+
+
+/** Clears everything for given buddies */
 - (void) purgeAllPropertiesForBuddies:(NSArray <OTRBuddy*>*)buddies {
     
     if([buddies count] == 0) {
@@ -238,7 +288,7 @@
     }];
     
     [self performAsyncWrite:^{
-        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+        [[OTRDatabaseManager sharedInstance].writeConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
             [buddies enumerateObjectsUsingBlock:^(OTRBuddy * _Nonnull buddy, NSUInteger idx, BOOL * _Nonnull stop) {
                 [self touchBuddy:buddy withTransaction:transaction];
             }];
@@ -246,21 +296,43 @@
     }];
 }
 
+/** Clears everything for given rooms */
+- (void) purgeAllPropertiesForRooms:(NSArray <OTRXMPPRoom*>*)rooms {
+    
+    if([rooms count] == 0) {
+        return;
+    }
+    
+    [self performAsyncWrite:^{
+        [rooms enumerateObjectsUsingBlock:^(OTRXMPPRoom * _Nonnull room, NSUInteger idx, BOOL * _Nonnull stop) {
+            [self.roomProperties removeObjectForKey:room.uniqueId];
+        }];
+    }];
+}
 
 #pragma mark Utility
 
 /** This is needed so database views are updated properly */
 - (void) touchBuddy:(OTRBuddy*)buddy withTransaction:(YapDatabaseReadWriteTransaction *)transaction {
-    NSParameterAssert(buddy.uniqueId);
-    if (!buddy.uniqueId) { return; }
-    [transaction touchObjectForKey:buddy.uniqueId inCollection:[[buddy class] collection]];
+    [self touchObject:buddy withTransaction:transaction];
 }
 
 - (void) touchBuddy:(OTRBuddy*)buddy {
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
-        [self touchBuddy:buddy withTransaction:transaction];
+    [self touchObject:buddy];
+}
+
+- (void) touchObject:(id<OTRYapDatabaseObjectProtocol>)object withTransaction:(YapDatabaseReadWriteTransaction *)transaction {
+    NSParameterAssert(object.uniqueId != nil);
+    if (!object.uniqueId) { return; }
+    [transaction touchObjectForKey:object.uniqueId inCollection:object.yapCollection];
+}
+
+- (void) touchObject:(id<OTRYapDatabaseObjectProtocol>)object {
+    [OTRDatabaseManager.shared.writeConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+        [self touchObject:object withTransaction:transaction];
     }];
 }
+
 
 /** Will perform block synchronously on the internalQueue and block for result if called on another queue. */
 - (void) performSyncRead:(dispatch_block_t)block {

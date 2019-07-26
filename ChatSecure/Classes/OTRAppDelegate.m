@@ -52,27 +52,27 @@
 #import "OTROutgoingMessage.h"
 #import "OTRPasswordGenerator.h"
 #import "UIViewController+ChatSecure.h"
-#import "OTRNotificationController.h"
 @import XMPPFramework;
 #import "OTRProtocolManager.h"
 #import "OTRInviteViewController.h"
-#import "OTRTheme.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRMessagesViewController.h"
 #import "OTRXMPPTorAccount.h"
 @import OTRAssets;
 @import OTRKit;
 #import "OTRPushTLVHandlerProtocols.h"
+#if KSCRASH
 #import <KSCrash/KSCrash.h>
 #import <KSCrash/KSCrashInstallationQuincyHockey.h>
 #import <KSCrash/KSCrashInstallation+Alert.h>
+#endif
+@import HockeySDK_Source;
 @import UserNotifications;
 
 #import "OTRChatDemo.h"
 
-@interface OTRAppDelegate () <UNUserNotificationCenterDelegate>
+@interface OTRAppDelegate ()
 
-@property (nonatomic, strong) OTRSplitViewCoordinator *splitViewCoordinator;
 @property (nonatomic, strong) OTRSplitViewControllerDelegateObject *splitViewControllerDelegate;
 
 @property (nonatomic, strong) NSTimer *fetchTimer;
@@ -83,31 +83,20 @@
 
 @implementation OTRAppDelegate
 @synthesize window = _window;
-@dynamic activeThreadYapKey;
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions
 {
-#if DEBUG
-    [DDLog addLogger:[DDTTYLogger sharedInstance]];
-    
-    DDFileLogger *fileLogger = [[DDFileLogger alloc] init];
-    fileLogger.rollingFrequency = 0;
-    fileLogger.maximumFileSize = 0;
-    [DDLog addLogger:fileLogger withLevel:DDLogLevelAll];
-#endif
+    [LogManager.shared setupLogging];
     
     [self setupCrashReporting];
-    
-    _theme = [[[self themeClass] alloc] init];
-    [self.theme setupGlobalTheme];
-    
+ 
     [SAMKeychain setAccessibilityType:kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly];
     
     UIViewController *rootViewController = nil;
     
     // Create 3 primary view controllers, settings, conversation list and messages
-    _conversationViewController = [self.theme conversationViewController];
-    _messagesViewController = [self.theme messagesViewController];
+    _conversationViewController = [GlobalTheme.shared conversationViewController];
+    _messagesViewController = [GlobalTheme.shared messagesViewController];
     
     
     if ([OTRDatabaseManager existsYapDatabase] && ![[OTRDatabaseManager sharedInstance] hasPassphrase]) {
@@ -133,7 +122,7 @@
         if ([[[NSProcessInfo processInfo] environment][@"OTRLaunchMode"] isEqualToString:@"ChatSecureUITestsDemoData"]) {
             [OTRChatDemo loadDemoChatInDatabase];
         } else if ([[[NSProcessInfo processInfo] environment][@"OTRLaunchMode"] isEqualToString:@"ChatSecureUITests"]) {
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+            [[OTRDatabaseManager sharedInstance].writeConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
                 [transaction removeAllObjectsInAllCollections];
             }];
         }
@@ -151,9 +140,6 @@
     
     [self.window makeKeyAndVisible];
     [TransactionObserver.shared startObserving];
-    
-    OTRNotificationController *notificationController = [OTRNotificationController sharedInstance];
-    [notificationController start];
     
     if ([PushController getPushPreference] == PushPreferenceEnabled) {
         [PushController registerForPushNotifications];
@@ -183,6 +169,11 @@
 }
 
 - (void) setupCrashReporting {
+    [[BITHockeyManager sharedHockeyManager] configureWithIdentifier:[OTRSecrets hockeyLiveIdentifier]];
+    [[BITHockeyManager sharedHockeyManager].crashManager setCrashManagerStatus: BITCrashManagerStatusAlwaysAsk];
+    [[BITHockeyManager sharedHockeyManager] startManager];
+    
+#if KSCRASH
     KSCrash *crash = [KSCrash sharedInstance];
     crash.monitoring = KSCrashMonitorTypeProductionSafeMinimal;
     
@@ -192,7 +183,7 @@
     // People are reporting deadlocks again...
     // Let's turn this back on for a little while.
 #if DEBUG
-    crash.monitoring = KSCrashMonitorTypeDebuggerSafe;
+    crash.monitoring = KSCrashMonitorTypeNone;
 #else
     //crash.monitoring = KSCrashMonitorTypeAll;
     //crash.deadlockWatchdogInterval = 20;
@@ -216,6 +207,7 @@
             NSLog(@"Sending %d KSCrashInstallationHockey reports.", (int)filteredReports.count);
         }
     }];
+#endif
 }
 
 /**
@@ -230,8 +222,8 @@
 - (UIViewController *)setupDefaultSplitViewControllerWithLeadingViewController:(nonnull UIViewController *)leadingViewController
 {
     
-    YapDatabaseConnection *connection = [OTRDatabaseManager sharedInstance].readWriteDatabaseConnection;
-    self.splitViewCoordinator = [[OTRSplitViewCoordinator alloc] initWithDatabaseConnection:connection];
+    YapDatabaseConnection *connection = [OTRDatabaseManager sharedInstance].writeConnection;
+    _splitViewCoordinator = [[OTRSplitViewCoordinator alloc] initWithDatabaseConnection:connection];
     self.splitViewControllerDelegate = [[OTRSplitViewControllerDelegateObject alloc] init];
     self.conversationViewController.delegate = self.splitViewCoordinator;
     
@@ -258,38 +250,10 @@
     self.window.rootViewController = [self setupDefaultSplitViewControllerWithLeadingViewController:[[UINavigationController alloc] initWithRootViewController:self.conversationViewController]];
 }
 
-- (NSString *)activeThreadYapKey
-{
-    __block NSString *threadOwnerYapKey = nil;
-    NSArray <UIViewController *>*viewControllers = [self.splitViewCoordinator.splitViewController viewControllers];
-    [viewControllers enumerateObjectsUsingBlock:^(UIViewController * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-        NSArray <UIViewController *>*result = nil;
-        if ([obj isKindOfClass:[UINavigationController class] ]) {
-            result = [((UINavigationController *)obj) otr_baseViewContorllers];
-        } else {
-            result = @[obj];
-        }
-        
-        [result enumerateObjectsUsingBlock:^(UIViewController * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-            if([obj isKindOfClass:[OTRMessagesViewController class]] && [obj otr_isVisible])
-            {
-                OTRMessagesViewController *messagesViewController = (OTRMessagesViewController *)obj;
-                threadOwnerYapKey = messagesViewController.threadKey;
-                
-                *stop = YES;
-            }
-        }];
-        
-        if (threadOwnerYapKey) {
-            *stop = YES;
-        }
-    }];
-    return threadOwnerYapKey;
-}
-
 - (void)applicationWillResignActive:(UIApplication *)application
 {
-    [OTRProtocolManager sharedInstance].lastInteractionDate = [NSDate date];
+    [OTRAppDelegate setLastInteractionDate:NSDate.date];
+    
     /*
      Sent when the application is about to move from active to inactive state. This can occur for certain types of temporary interruptions (such as an incoming phone call or SMS message) or when the user quits the application and it begins the transition to the background state.
      Use this method to pause ongoing tasks, disable timers, and throttle down OpenGL ES frame rates. Games should use this method to pause the game.
@@ -303,24 +267,33 @@
     NSAssert(self.backgroundTask == UIBackgroundTaskInvalid, nil);
     
     __block NSUInteger unread = 0;
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].readConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         unread = [transaction numberOfUnreadMessages];
     } completionBlock:^{
         application.applicationIconBadgeNumber = unread;
+//#if DEBUG
+//        // Temporary hack to fix corrupted development database
+//        if (unread > 0) {
+//            [self fixUnreadMessageCount:^(NSUInteger count) {
+//                application.applicationIconBadgeNumber = count;
+//            }];
+//        }
+//#endif
     }];
     
+
+    
     self.backgroundTask = [application beginBackgroundTaskWithExpirationHandler: ^{
-        dispatch_async(dispatch_get_main_queue(), ^{
-            DDLogInfo(@"Background task expired, disconnecting all accounts. Remaining: %f", application.backgroundTimeRemaining);
-            [[OTRProtocolManager sharedInstance] disconnectAllAccountsSocketOnly:YES];
-            if (self.backgroundTimer)
-            {
-                [self.backgroundTimer invalidate];
-                self.backgroundTimer = nil;
-            }
+        DDLogInfo(@"Background task expired, disconnecting all accounts. Remaining: %f", application.backgroundTimeRemaining);
+        if (self.backgroundTimer)
+        {
+            [self.backgroundTimer invalidate];
+            self.backgroundTimer = nil;
+        }
+        [[OTRProtocolManager sharedInstance] disconnectAllAccountsSocketOnly:YES timeout:application.backgroundTimeRemaining - .5 completionBlock:^{
             [application endBackgroundTask:self.backgroundTask];
             self.backgroundTask = UIBackgroundTaskInvalid;
-        });
+        }];
     }];
     
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -329,15 +302,17 @@
 }
                                 
 - (void) timerUpdate:(NSTimer*)timer {
-    UIApplication *application = [UIApplication sharedApplication];
-    NSTimeInterval timeRemaining = application.backgroundTimeRemaining;
-    DDLogVerbose(@"Timer update, background time left: %f", timeRemaining);
+    //UIApplication *application = [UIApplication sharedApplication];
+    //NSTimeInterval timeRemaining = application.backgroundTimeRemaining;
+    //DDLogVerbose(@"Timer update, background time left: %f", timeRemaining);
 }
 
 /** Doesn't stop autoLogin if previous crash when it's a background launch */
 - (void)autoLoginFromBackground:(BOOL)fromBackground
 {
-    [[OTRProtocolManager sharedInstance] loginAccounts:[OTRAccountsManager allAutoLoginAccounts]];
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [[OTRProtocolManager sharedInstance] loginAccounts:[OTRAccountsManager allAutoLoginAccounts]];
+    });
 }
 
 - (void)applicationWillEnterForeground:(UIApplication *)application
@@ -347,7 +322,7 @@
 
 - (void)applicationDidBecomeActive:(UIApplication *)application
 {
-    [OTRProtocolManager sharedInstance].lastInteractionDate = [NSDate date];
+    [OTRAppDelegate setLastInteractionDate:NSDate.date];
     [self autoLoginFromBackground:NO];
     /*
      Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
@@ -368,14 +343,20 @@
     }
     
     [UIApplication.sharedApplication removeExtraForegroundNotifications];
-    
+    [self resetFetchTimerWithResult:UIBackgroundFetchResultNewData];
+}
+
+/**
+ If we have a fetch timer set, call the completion callback and invalidate the timer
+ */
+- (void)resetFetchTimerWithResult:(UIBackgroundFetchResult)result {
     if (self.fetchTimer) {
         if (self.fetchTimer.isValid) {
             NSDictionary *userInfo = self.fetchTimer.userInfo;
             void (^completion)(UIBackgroundFetchResult) = [userInfo objectForKey:@"completion"];
             // We should probbaly return accurate fetch results
             if (completion) {
-                completion(UIBackgroundFetchResultNewData);
+                completion(result);
             }
             [self.fetchTimer invalidate];
         }
@@ -399,22 +380,32 @@
 }
 
 -(void)application:(UIApplication *)application performFetchWithCompletionHandler:(void (^)(UIBackgroundFetchResult))completionHandler {
-    [self autoLoginFromBackground:YES];
+    // If we have an old fetch happening, call completion on that
+    [self resetFetchTimerWithResult:UIBackgroundFetchResultNoData];
     
-    self.fetchTimer = [NSTimer scheduledTimerWithTimeInterval:28.5 target:self selector:@selector(fetchTimerUpdate:) userInfo:@{@"completion": completionHandler} repeats:NO];
+    if(application.applicationState == UIApplicationStateBackground) {
+        [self autoLoginFromBackground:YES];
+
+        self.fetchTimer = [NSTimer scheduledTimerWithTimeInterval:28.5 target:self selector:@selector(fetchTimerUpdate:) userInfo:@{@"completion": completionHandler} repeats:NO];
+    } else {
+        // Must call completion handler
+        completionHandler(UIBackgroundFetchResultNoData);
+    }
 }
 
 - (void) fetchTimerUpdate:(NSTimer*)timer {
-    [[OTRProtocolManager sharedInstance] disconnectAllAccountsSocketOnly:YES];
-    NSDictionary *userInfo = timer.userInfo;
-    void (^completion)(UIBackgroundFetchResult) = [userInfo objectForKey:@"completion"];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [UIApplication.sharedApplication removeExtraForegroundNotifications];
-        // We should probbaly return accurate fetch results
-        if (completion) {
-            completion(UIBackgroundFetchResultNewData);
-        }
-    });
+    void (^completion)(UIBackgroundFetchResult) = timer.userInfo[@"completion"];
+    NSTimeInterval timeout = [[UIApplication sharedApplication] backgroundTimeRemaining] - .5;
+
+    [[OTRProtocolManager sharedInstance] disconnectAllAccountsSocketOnly:YES timeout:timeout completionBlock:^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [UIApplication.sharedApplication removeExtraForegroundNotifications];
+            // We should probably return accurate fetch results
+            if (completion) {
+                completion(UIBackgroundFetchResultNewData);
+            }
+        });
+    }];
     self.fetchTimer = nil;
 }
 
@@ -422,7 +413,7 @@
 {
     [self application:application performFetchWithCompletionHandler:completionHandler];
     
-    [[OTRProtocolManager sharedInstance].pushController receiveRemoteNotification:userInfo completion:^(OTRBuddy * _Nullable buddy, NSError * _Nullable error) {
+    [OTRProtocolManager.pushController receiveRemoteNotification:userInfo completion:^(OTRBuddy * _Nullable buddy, NSError * _Nullable error) {
         // Only show notification if buddy lookup succeeds
         if (buddy) {
             [application showLocalNotificationForKnockFrom:buddy];
@@ -430,7 +421,7 @@
     }];
 }
 
-- (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void(^)(NSArray * __nullable restorableObjects))restorationHandler {
+- (BOOL)application:(UIApplication *)application continueUserActivity:(NSUserActivity *)userActivity restorationHandler:(void (^)(NSArray<id<UIUserActivityRestoring>> *restorableObjects))restorationHandler {
     if ([userActivity.activityType isEqualToString:NSUserActivityTypeBrowsingWeb]) {
         NSURL *url = userActivity.webpageURL;
         if ([url otr_isInviteLink]) {
@@ -455,13 +446,7 @@
     return NO;
 }
 
-- (void)application:(UIApplication *)application didReceiveLocalNotification:(UILocalNotification *)notification {
-    
-    
-}
-
-- (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
-{
+- (BOOL) application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
     if ([url.scheme isEqualToString:@"xmpp"]) {
         XMPPURI *xmppURI = [[XMPPURI alloc] initWithURL:url];
         XMPPJID *jid = xmppURI.jid;
@@ -471,8 +456,7 @@
             [OTRProtocolManager handleInviteForJID:jid otrFingerprint:otrFingerprint buddyAddedCallback:^ (OTRBuddy *buddy) {
                 OTRXMPPBuddy *xmppBuddy = (OTRXMPPBuddy *)buddy;
                 if (xmppBuddy != nil) {
-                    NSDictionary *userInfo = [[NSDictionary alloc] initWithObjectsAndKeys:xmppBuddy.threadIdentifier, kOTRNotificationThreadKey, xmppBuddy.threadCollection, kOTRNotificationThreadCollection, nil];
-                    [self enterThreadWithUserInfo:userInfo];
+                    [self enterThreadWithKey:xmppBuddy.threadIdentifier collection:xmppBuddy.threadCollection];
                 }
             }];
             return YES;
@@ -481,26 +465,9 @@
     return NO;
 }
 
-
-
 - (void) showSubscriptionRequestForBuddy:(NSDictionary*)userInfo {
     // This is probably in response to a user requesting subscriptions from us
     [self.splitViewCoordinator showConversationsViewController];
-}
-
-- (void) enterThreadWithUserInfo:(NSDictionary*)userInfo {
-    NSString *threadKey = userInfo[kOTRNotificationThreadKey];
-    NSString *threadCollection = userInfo[kOTRNotificationThreadCollection];
-    NSParameterAssert(threadKey);
-    NSParameterAssert(threadCollection);
-    if (!threadKey || !threadCollection) { return; }
-    __block id <OTRThreadOwner> thread = nil;
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
-        thread = [transaction objectForKey:threadKey inCollection:threadCollection];
-    }];
-    if (thread) {
-        [self.splitViewCoordinator enterConversationWithThread:thread sender:self];
-    }
 }
 
 - (void)application:(UIApplication *)application didRegisterUserNotificationSettings:(UIUserNotificationSettings *)notificationSettings
@@ -515,11 +482,10 @@
 
 - (void)application:(UIApplication *)app didRegisterForRemoteNotificationsWithDeviceToken:(nonnull NSData *)deviceToken
 {
-    [[OTRProtocolManager sharedInstance].pushController didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
+    [OTRProtocolManager.pushController didRegisterForRemoteNotificationsWithDeviceToken:deviceToken];
 }
 
 - (void)application:(UIApplication *)app didFailToRegisterForRemoteNotificationsWithError:(NSError *)err {
-    [[NSNotificationCenter defaultCenter] postNotificationName:OTRFailedRemoteNotificationRegistration object:self userInfo:@{kOTRNotificationErrorKey:err}];
     DDLogError(@"Error in registration. Error: %@%@", [err localizedDescription], [err userInfo]);
 }
 
@@ -533,29 +499,6 @@
     }
 }
 
-#pragma mark UNUserNotificationCenterDelegate methods (iOS 10+)
-
-- (void) userNotificationCenter:(UNUserNotificationCenter *)center willPresentNotification:(UNNotification *)notification withCompletionHandler:(void (^)(UNNotificationPresentationOptions))completionHandler {
-    if ([notification.request.content.threadIdentifier isEqualToString:[self activeThreadYapKey]]) {
-        completionHandler(UNNotificationPresentationOptionNone);
-    } else {
-        completionHandler(UNNotificationPresentationOptionBadge | UNNotificationPresentationOptionSound | UNNotificationPresentationOptionAlert);
-    }
-}
-
-- (void) userNotificationCenter:(UNUserNotificationCenter *)center didReceiveNotificationResponse:(UNNotificationResponse *)response withCompletionHandler:(void (^)(void))completionHandler {
-    NSDictionary *userInfo = response.notification.request.content.userInfo;
-    if ([userInfo[kOTRNotificationType] isEqualToString:kOTRNotificationTypeNone]) {
-        // Nothing
-    } else if ([userInfo[kOTRNotificationType] isEqualToString:kOTRNotificationTypeSubscriptionRequest]) {
-        // This is a subscription request
-        [self showSubscriptionRequestForBuddy:userInfo];
-    } else {
-        [self enterThreadWithUserInfo:userInfo];
-    }
-    completionHandler();
-}
-
 #pragma - mark Class Methods
 + (instancetype)appDelegate
 {
@@ -564,8 +507,6 @@
 
 #pragma mark - Theming
 
-- (Class) themeClass {
-    return [OTRTheme class];
-}
+- (void) setupTheme { }
 
 @end

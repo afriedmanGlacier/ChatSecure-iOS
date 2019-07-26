@@ -18,10 +18,16 @@ NSString* ACTIVE_STRING() { return [OTRLanguageManager translatedString:@"Active
 NSString* ADD_BUDDY_STRING() { return [OTRLanguageManager translatedString:@"Add Buddy"]; }
 /** "Add Existing Account", Label for button to create account by logging into an existing account */
 NSString* ADD_EXISTING_STRING() { return [OTRLanguageManager translatedString:@"Add Existing Account"]; }
+/** "Is %@ your friend? Add him/her to auto-download pictures in the future.", Shown in chat view to prompt user to add friend for auto-download of group media messages. */
+NSString* ADD_FRIEND_TO_AUTO_DOWNLOAD() { return [OTRLanguageManager translatedString:@"Is %@ your friend? Add him/her to auto-download pictures in the future."]; }
 /** "Add", Button title to add someone as a buddy */
 NSString* ADD_STRING() { return [OTRLanguageManager translatedString:@"Add"]; }
 /** "Advanced", String to describe advanced set of settings */
 NSString* ADVANCED_STRING() { return [OTRLanguageManager translatedString:@"Advanced"]; }
+/** "Restore iTunes backups to new devices", Description for allowing DB passphrase backup */
+NSString* ALLOW_DB_PASSPHRASE_BACKUP_DESCRIPTION_STRING() { return [OTRLanguageManager translatedString:@"Restore iTunes backups to new devices"]; }
+/** "Allow Device Migration", Title for allowing DB passphrase backup */
+NSString* ALLOW_DB_PASSPHRASE_BACKUP_TITLE_STRING() { return [OTRLanguageManager translatedString:@"Allow Device Migration"]; }
 /** "Archive", Verb. action for archiving an old conversation */
 NSString* ARCHIVE_ACTION_STRING() { return [OTRLanguageManager translatedString:@"Archive"]; }
 /** "Archive", Noun. segmented control value for displaying archived conversations */
@@ -76,6 +82,10 @@ NSString* CONNECTED_STRING() { return [OTRLanguageManager translatedString:@"Con
 NSString* CONNECTING_STRING() { return [OTRLanguageManager translatedString:@"Connecting"]; }
 /** "Connecting to Tor", Message shown when connecting to the Tor network */
 NSString* CONNECTING_TO_TOR_STRING() { return [OTRLanguageManager translatedString:@"Connecting to Tor"]; }
+/** "Please re-verify the server's certificate.", alert title for connection errors */
+NSString* CONNECTION_ERROR_CERTIFICATE_VERIFY_STRING() { return [OTRLanguageManager translatedString:@"Please re-verify the server's certificate."]; }
+/** "There was an error connecting to account", alert title for connection errors */
+NSString* CONNECTION_ERROR_STRING() { return [OTRLanguageManager translatedString:@"There was an error connecting to account"]; }
 /** "Connect", String for button to connect connect */
 NSString* CONNECT_STRING() { return [OTRLanguageManager translatedString:@"Connect"]; }
 /** "Copy Link", Copy link URL to clipboard as in copy and paste */
@@ -138,6 +148,10 @@ NSString* Database_Error_String() { return [OTRLanguageManager translatedString:
 NSString* EDIT_ACCOUNT_STRING() { return [OTRLanguageManager translatedString:@"Edit Account"]; }
 /** "Email", The string describing account name or email address for a buddy */
 NSString* EMAIL_STRING() { return [OTRLanguageManager translatedString:@"Email"]; }
+/** "Beware! These logs are for debugging purposes only and will contain sensitive material like usernames, passwords, contacts, and message history. Disabling this option will delete all existing logs.", extra information about debug logging */
+NSString* ENABLE_DEBUG_LOGGING_HELP_STRING() { return [OTRLanguageManager translatedString:@"Beware! These logs are for debugging purposes only and will contain sensitive material like usernames, passwords, contacts, and message history. Disabling this option will delete all existing logs."]; }
+/** "Enable Debug Logging", switch label for toggling debug logs */
+NSString* ENABLE_DEBUG_LOGGING_STRING() { return [OTRLanguageManager translatedString:@"Enable Debug Logging"]; }
 /** "Enable Push in Settings", button for enabling push messages in iOS system settings */
 NSString* ENABLE_PUSH_IN_SETTINGS_STRING() { return [OTRLanguageManager translatedString:@"Enable Push in Settings"]; }
 /** "Enable Push", button for enabling push messages */
@@ -150,6 +164,8 @@ NSString* ENTER_GROUP_NAME_STRING() { return [OTRLanguageManager translatedStrin
 NSString* ERROR_CREATING_ACCOUNT_STRING() { return [OTRLanguageManager translatedString:@"Error Creating Account"]; }
 /** "Error", Title of error message pop-up box */
 NSString* ERROR_STRING() { return [OTRLanguageManager translatedString:@"Error"]; }
+/** "Experimental", Section for experimental settings */
+NSString* EXPERIMENTAL_STRING() { return [OTRLanguageManager translatedString:@"Experimental"]; }
 /** "Extended Away", Default message when a user status is set to extended away */
 NSString* EXTENDED_AWAY_STRING() { return [OTRLanguageManager translatedString:@"Extended Away"]; }
 /** "Enable", enable permission */
@@ -178,10 +194,14 @@ NSString* GITHUB_STRING() { return [OTRLanguageManager translatedString:@"GitHub
 NSString* GOOGLE_TALK_STRING() { return [OTRLanguageManager translatedString:@"Google Talk"]; }
 /** "Group Chat", a subtitle label for a group chat */
 NSString* GROUP_CHAT_STRING() { return [OTRLanguageManager translatedString:@"Group Chat"]; }
+/** "Make Admin", Label for granting admin privileges to someone in a group */
+NSString* GROUP_GRANT_ADMIN_STRING() { return [OTRLanguageManager translatedString:@"Make Admin"]; }
 /** "you", This will be shown after your own JID in the group profile view */
 NSString* GROUP_INFO_YOU() { return [OTRLanguageManager translatedString:@"you"]; }
 /** "Group Name", The title for the view to enter a group chat name or label */
 NSString* GROUP_NAME_STRING() { return [OTRLanguageManager translatedString:@"Group Name"]; }
+/** "Kick Out", Label for revoking membership for someone in a group */
+NSString* GROUP_REVOKE_MEMBERSHIP_STRING() { return [OTRLanguageManager translatedString:@"Kick Out"]; }
 /** "Generate Secure Password", whether or not we should generate a strong password for them */
 NSString* Generate_Secure_Password() { return [OTRLanguageManager translatedString:@"Generate Secure Password"]; }
 /** "We can automatically generate you a secure password. If you choose your own, make sure it's a unique password you don't use anywhere else.", help text for password generator */
@@ -226,6 +246,8 @@ NSString* LOGIN_STRING() { return [OTRLanguageManager translatedString:@"Log In"
 NSString* LOGOUT_STRING() { return [OTRLanguageManager translatedString:@"Log Out"]; }
 /** "Manage ChatSecure Push account", Title for button to manage ChatSecure Push account */
 NSString* MANAGE_CHATSECURE_PUSH_ACCOUNT_STRING() { return [OTRLanguageManager translatedString:@"Manage ChatSecure Push account"]; }
+/** "Manage Debug Logs", Manage the device logs */
+NSString* MANAGE_DEBUG_LOGS_STRING() { return [OTRLanguageManager translatedString:@"Manage Debug Logs"]; }
 /** "Manage My Keys", Button to manage your OTR and OMEMO keys */
 NSString* MANAGE_MY_KEYS() { return [OTRLanguageManager translatedString:@"Manage My Keys"]; }
 /** "Maybe Later", button to do something later */
@@ -282,6 +304,8 @@ NSString* NEW_MESSAGE_STRING() { return [OTRLanguageManager translatedString:@"N
 NSString* NEW_STRING() { return [OTRLanguageManager translatedString:@"New"]; }
 /** "Next", Label for button to go to next step */
 NSString* NEXT_STRING() { return [OTRLanguageManager translatedString:@"Next"]; }
+/** "Notifications", Label for notifications switch */
+NSString* NOTIFICATIONS_STRING() { return [OTRLanguageManager translatedString:@"Notifications"]; }
 /** "We could not find any trusted devices for this account.", Error message for not finding any devices */
 NSString* NO_DEVICES_ACCOUNT_ERROR_STRING() { return [OTRLanguageManager translatedString:@"We could not find any trusted devices for this account."]; }
 /** "We could not find any trusted devices for this contact.", Error message for not finding any devices */
@@ -296,6 +320,10 @@ NSString* OFFLINE_STRING() { return [OTRLanguageManager translatedString:@"Offli
 NSString* OK_STRING() { return [OTRLanguageManager translatedString:@"OK"]; }
 /** "Old", For an old settings value */
 NSString* OLD_STRING() { return [OTRLanguageManager translatedString:@"Old"]; }
+/** "Note: this does not automatically enable group encryption. It must also be manually enabled on a per-group basis.", toggling switch detail for showing OMEMO group encryption */
+NSString* OMEMO_GROUP_ENCRYPTION_DETAIL_STRING() { return [OTRLanguageManager translatedString:@"Note: this does not automatically enable group encryption. It must also be manually enabled on a per-group basis."]; }
+/** "OMEMO Group Encryption", For an old settings value */
+NSString* OMEMO_GROUP_ENCRYPTION_STRING() { return [OTRLanguageManager translatedString:@"OMEMO Group Encryption"]; }
 /** "You're ready to use", String used when onboarding works */
 NSString* ONBOARDING_SUCCESS_STRING() { return [OTRLanguageManager translatedString:@"You're ready to use"]; }
 /** "Open in Chrome", Label to open link in the chrome web browser */
@@ -434,6 +462,8 @@ NSString* SETTINGS_STRING() { return [OTRLanguageManager translatedString:@"Sett
 NSString* SHARE_MESSAGE_STRING() { return [OTRLanguageManager translatedString:@"Chat with me securely"]; }
 /** "Share", Title for sharing a link to the app */
 NSString* SHARE_STRING() { return [OTRLanguageManager translatedString:@"Share"]; }
+/** "Show Console", button label for showing log console */
+NSString* SHOW_CONSOLE_STRING() { return [OTRLanguageManager translatedString:@"Show Console"]; }
 /** "Would you like to connect to UserVoice to send feedback?", actionsheet for showing uservoice feedback service */
 NSString* SHOW_USERVOICE_STRING() { return [OTRLanguageManager translatedString:@"Would you like to connect to UserVoice to send feedback?"]; }
 /** "Sign Up", title label for signing up for a new account */
@@ -478,6 +508,8 @@ NSString* UNTRUSTED_DEVICE_SENT_STRING() { return [OTRLanguageManager translated
 NSString* UNTRUSTED_DEVICE_STRING() { return [OTRLanguageManager translatedString:@"Untrusted Device"]; }
 /** "Username", Label text for username field on login screen */
 NSString* USERNAME_STRING() { return [OTRLanguageManager translatedString:@"Username"]; }
+/** "Canceled", Describes a state entered by user cancelation */
+NSString* USER_CANCELED_STRING() { return [OTRLanguageManager translatedString:@"Canceled"]; }
 /** "Camera", Label for button to take a photo from camera */
 NSString* USE_CAMERA_STRING() { return [OTRLanguageManager translatedString:@"Camera"]; }
 /** "Unrecognized Invite Format", shown when invite QR code doesnt work */
@@ -508,6 +540,8 @@ NSString* XMPP_FAIL_STRING() { return [OTRLanguageManager translatedString:@"Fai
 NSString* XMPP_TOR_STRING() { return [OTRLanguageManager translatedString:@"XMPP + Tor"]; }
 /** "user@example.com", Example of a username using the words user and example */
 NSString* XMPP_USERNAME_EXAMPLE_STRING() { return [OTRLanguageManager translatedString:@"user@example.com"]; }
+/** "You have been invited to the ´%@´ group.", Title of screen for joining/not joining group */
+NSString* YOU_HAVE_BEEN_INVITED_TO_GROUP_STRING() { return [OTRLanguageManager translatedString:@"You have been invited to the ´%@´ group."]; }
 /** "Bad certificate format", SSL error message */
 NSString* errSSLBadCertString() { return [OTRLanguageManager translatedString:@"Bad certificate format"]; }
 /** "Bad SSLCipherSuite", SSL error message */

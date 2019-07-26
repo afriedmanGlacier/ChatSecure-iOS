@@ -15,7 +15,7 @@
 @import YapDatabase;
 #import "OTRImages.h"
 @import JSQMessagesViewController;
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 @import OTRKit;
 #import "OTRLog.h"
 #import "OTRColors.h"
@@ -96,11 +96,11 @@
 }
 
 - (NSUInteger)numberOfUnreadMessagesWithTransaction:(nonnull YapDatabaseReadTransaction*)transaction {
-    YapDatabaseSecondaryIndexTransaction *indexTransaction = [transaction ext:OTRMessagesSecondaryIndex];
+    YapDatabaseSecondaryIndexTransaction *indexTransaction = [transaction ext:SecondaryIndexName.messages];
     if (!indexTransaction) {
         return 0;
     }
-    NSString *queryString = [NSString stringWithFormat:@"WHERE %@ == %@ AND %@ == ?", OTRYapDatabaseUnreadMessageSecondaryIndexColumnName, @(NO), OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName];
+    NSString *queryString = [NSString stringWithFormat:@"WHERE %@ == %@ AND %@ == ?", MessageIndexColumnName.isMessageRead, @(NO), MessageIndexColumnName.threadId];
     YapDatabaseQuery *query = [YapDatabaseQuery queryWithFormat:queryString, self.uniqueId];
     NSUInteger numRows = 0;
     BOOL success = [indexTransaction getNumberOfRows:&numRows matchingQuery:query];
@@ -160,13 +160,7 @@
 
 - (OTRMessageTransportSecurity)bestTransportSecurityWithTransaction:(nonnull YapDatabaseReadTransaction *)transaction
 {
-    NSParameterAssert(transaction);
-    if (!transaction) {
-        @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:@"Missing transaction for bestTransportSecurityWithTransaction!" userInfo:nil];
-    }
-    NSArray <OTROMEMODevice *>*devices = [OTROMEMODevice allDevicesForParentKey:self.uniqueId
-                                                                     collection:[[self class] collection]
-                                                                        transaction:transaction];
+    NSArray <OMEMODevice *>*devices = [self omemoDevicesWithTransaction:transaction];
     // If we have some omemo devices then that's the best we have.
     if ([devices count] > 0) {
         return OTRMessageTransportSecurityOMEMO;
@@ -176,12 +170,23 @@
     
     // Check if we have fingerprints for this buddy. This is the best proxy we have for detecting if we have had an otr session in the past.
     // If we had a session in the past then we should use that otherwise.
-    NSArray<OTRFingerprint *> *allFingerprints = [[OTRProtocolManager sharedInstance].encryptionManager.otrKit fingerprintsForUsername:self.username accountName:account.username protocol:account.protocolTypeString];
+    NSArray<OTRFingerprint *> *allFingerprints = [OTRProtocolManager.encryptionManager.otrKit fingerprintsForUsername:self.username accountName:account.username protocol:account.protocolTypeString];
     if ([allFingerprints count]) {
         return OTRMessageTransportSecurityOTR;
     } else {
         return OTRMessageTransportSecurityPlaintextWithOTR;
     }
+}
+
+- (NSArray<OMEMODevice*>*)omemoDevicesWithTransaction:(YapDatabaseReadTransaction*)transaction {
+    NSParameterAssert(transaction);
+    if (!transaction) {
+        @throw [NSException exceptionWithName:NSInternalInconsistencyException reason:@"Missing transaction for bestTransportSecurityWithTransaction!" userInfo:nil];
+    }
+    NSArray <OMEMODevice *>*devices = [OMEMODevice allDevicesForParentKey:self.uniqueId
+                                                                     collection:[[self class] collection]
+                                                                    transaction:transaction];
+    return devices;
 }
 
 #pragma - mark OTRUserInfoProfile Protocol
@@ -302,33 +307,6 @@
 }
 
 #pragma - mark Class Methods
-
-+ (instancetype)fetchBuddyForUsername:(NSString *)username accountName:(NSString *)accountName transaction:(YapDatabaseReadTransaction *)transaction
-{
-    OTRAccount *account = [[OTRAccount allAccountsWithUsername:accountName transaction:transaction] firstObject];
-    return [self fetchBuddyWithUsername:username withAccountUniqueId:account.uniqueId transaction:transaction];
-}
-
-+ (instancetype)fetchBuddyWithUsername:(NSString *)username withAccountUniqueId:(NSString *)accountUniqueId transaction:(YapDatabaseReadTransaction *)transaction
-{
-    __block OTRBuddy *finalBuddy = nil;
-    
-    NSString *extensionName = [YapDatabaseConstants extensionName:DatabaseExtensionNameRelationshipExtensionName];
-    NSString *edgeName = [YapDatabaseConstants edgeName:RelationshipEdgeNameBuddyAccountEdgeName];
-    [[transaction ext:extensionName] enumerateEdgesWithName:edgeName destinationKey:accountUniqueId collection:[OTRAccount collection] usingBlock:^(YapDatabaseRelationshipEdge *edge, BOOL *stop) {
-        //Some how we're getting OTRXMPPPresensceSubscritionreuest
-        OTRBuddy * buddy = [transaction objectForKey:edge.sourceKey inCollection:edge.sourceCollection];
-        // Checking buddy class is a hotfix for issue #472
-        if (buddy &&
-            [buddy isKindOfClass:[OTRBuddy class]] &&
-            [buddy.username.lowercaseString isEqualToString:username.lowercaseString]) {
-            *stop = YES;
-            finalBuddy = buddy;
-        }
-    }];
-
-    return finalBuddy;
-}
 
 #pragma mark Disable Mantle Storage of Dynamic Properties
 

@@ -45,13 +45,13 @@ public class ServerCapabilitiesViewController: UIViewController, UITableViewDele
             let jid = XMPPJID(user: nil, domain: pubsubEndpoint, resource: nil) else {
             return
         }
-        check.xmpp?.xmppPushModule.disablePush(forServerJID: jid, node: nil, elementId: nil)
+        check.pushModule.disablePush(forServerJID: jid, node: nil, elementId: nil)
     }
     
-    func didRegisterUserNotificationSettings(_ notification: Notification) {
+    @objc func didRegisterUserNotificationSettings(_ notification: Notification) {
         tableView.reloadData()
         if !PushController.canReceivePushNotifications() {
-            if let appSettings = URL(string: UIApplicationOpenSettingsURLString) {
+            if let appSettings = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.openURL(appSettings)
             }
         }
@@ -101,7 +101,7 @@ public class ServerCapabilitiesViewController: UIViewController, UITableViewDele
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // This will allow us to refresh the permission prompts after use changes them in background
-        NotificationCenter.default.addObserver(self, selector: #selector(refreshAllData), name: NSNotification.Name.UIApplicationWillEnterForeground, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshAllData), name: UIApplication.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(EnablePushViewController.didRegisterUserNotificationSettings(_:)), name: NSNotification.Name(rawValue: OTRUserNotificationsChanged), object: nil)
         // Add capabilities listener
         NotificationCenter.default.addObserver(self, selector: #selector(serverCheckUpdate(_:)), name: ServerCheck.UpdateNotificationName, object: check)
@@ -148,7 +148,7 @@ public class ServerCapabilitiesViewController: UIViewController, UITableViewDele
                 self?.unregisterForXMPPPush(sender)
                 self?.check.push.reset(completion: {
                     self?.check.refresh()
-                    self?.check.xmpp?.xmppPushModule.refresh()
+                    self?.check.pushModule.refresh()
                     }, callbackQueue: DispatchQueue.main)
             })
         }
@@ -187,7 +187,7 @@ public class ServerCapabilitiesViewController: UIViewController, UITableViewDele
         }
         fetchCell.button.setTitle(FIX_BACKGROUND_FETCH_STRING(), for: .normal)
         fetchCell.buttonAction = { (cell, sender) in
-            if let appSettings = URL(string: UIApplicationOpenSettingsURLString) {
+            if let appSettings = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.openURL(appSettings)
             }
         }

@@ -9,9 +9,26 @@
 import XCTest
 @testable import ChatSecureCore
 
+extension OTROMEMOSignalCoordinator {
+    convenience init(accountYapKey: String, connections: DatabaseConnections) throws {
+        let databaseConnection = connections.write
+        let capsStorage = XMPPCapabilitiesCoreDataStorage(inMemoryStore: ())!
+        let caps = XMPPCapabilities(capabilitiesStorage: capsStorage)
+        let serverCaps = OTRServerCapabilities(capabilities: caps, dispatchQueue: nil)
+        let file = FileTransferManager(connection: databaseConnection, serverCapabilities: serverCaps, sessionConfiguration: URLSessionConfiguration.ephemeral)
+        let cardStorage = VCardStorage(connections: connections)
+        let vCard = XMPPvCardTempModule(vCardStorage: cardStorage)
+        let roomStorage = RoomStorage(connection: databaseConnection, capabilities: caps, fileTransfer: file, vCardModule: vCard, omemoModule: nil)
+        let messageStorage = MessageStorage(connection: databaseConnection, capabilities: caps, fileTransfer: file, roomStorage: roomStorage)
+        let mam = XMPPMessageArchiveManagement()
+        let roomManager = OTRXMPPRoomManager(databaseConnection: databaseConnection, roomStorage: roomStorage, archiving: mam, dispatchQueue: nil)
+        try self.init(accountYapKey: accountYapKey, databaseConnection: databaseConnection, messageStorage: messageStorage, roomManager: roomManager)
+    }
+}
+
 class OTROmemoStorageTest: XCTestCase {
     
-    var databaseManager:OTRDatabaseManager!
+    var databaseManager:OTRDatabaseManager?
     var omemoStorage:OTROMEMOStorageManager!
     var signalStorage:OTRSignalStorageManager!
     var signalCoordinator:OTROMEMOSignalCoordinator!
@@ -23,7 +40,9 @@ class OTROmemoStorageTest: XCTestCase {
     override func setUp() {
         super.setUp()
         
-        FileManager.default.clearDirectory(OTRTestDatabaseManager.yapDatabaseDirectory())
+        if let databaseDirectory = databaseManager?.databaseDirectory {
+            FileManager.default.clearDirectory(databaseDirectory)
+        }
     }
     
     override func tearDown() {
@@ -41,14 +60,15 @@ class OTROmemoStorageTest: XCTestCase {
         self.accountCollection = OTRXMPPAccount.collection
         
         
-        self.databaseManager = OTRTestDatabaseManager()
-        self.databaseManager.setDatabasePassphrase("help", remember: false, error: nil)
-        self.databaseManager.setupDatabase(withName: name, withMediaStorage: false)
-        self.omemoStorage = OTROMEMOStorageManager(accountKey: accountKey, accountCollection:accountCollection, databaseConnection: databaseManager.readWriteDatabaseConnection!)
-        self.signalStorage = OTRSignalStorageManager(accountKey: accountKey, databaseConnection: databaseManager.readWriteDatabaseConnection!, delegate: nil)
-        self.signalCoordinator = try! OTROMEMOSignalCoordinator(accountYapKey: accountKey, databaseConnection: databaseManager.readWriteDatabaseConnection!)
+        let databaseManager = OTRDatabaseManager()
+        self.databaseManager = databaseManager
+        self.databaseManager?.setupTestDatabase(name: name)
+        self.omemoStorage = OTROMEMOStorageManager(accountKey: accountKey, accountCollection:accountCollection, databaseConnection: databaseManager.writeConnection!)
         
-        databaseManager.readWriteDatabaseConnection?.readWrite( { (transaction) in
+        self.signalStorage = OTRSignalStorageManager(accountKey: accountKey, databaseConnection: databaseManager.writeConnection!, delegate: nil)
+        self.signalCoordinator = try! OTROMEMOSignalCoordinator(accountYapKey: accountKey, connections: databaseManager.connections!)
+        
+        databaseManager.writeConnection?.readWrite( { (transaction) in
             account.save(with: transaction)
         })
     }
@@ -59,7 +79,7 @@ class OTROmemoStorageTest: XCTestCase {
      */
     func storeInitialDevices() {
         self.omemoStorage.storeOurDevices(self.initialDevices)
-        let firstStoredDevices = omemoStorage.getDevicesForOurAccount(nil)
+        let firstStoredDevices = omemoStorage.getDevicesForOurAccount(trustedOnly: false)
         XCTAssertEqual(firstStoredDevices.count, self.initialDevices.count)
         firstStoredDevices.forEach { (device) in
             XCTAssert(device.trustLevel == .trustedTofu)
@@ -81,7 +101,7 @@ class OTROmemoStorageTest: XCTestCase {
         //Now simulate getting a new set of devices where one was removed and two were added.
         
         omemoStorage.storeOurDevices(self.secondDeviceNumbers)
-        let secondStoredDevices = omemoStorage.getDevicesForOurAccount(nil)
+        let secondStoredDevices = omemoStorage.getDevicesForOurAccount(trustedOnly: false)
         XCTAssertEqual(secondStoredDevices.count, 5)
         secondStoredDevices.forEach { (device) in
             
@@ -125,7 +145,7 @@ class OTROmemoStorageTest: XCTestCase {
         
         let thirdDeviceNumbers = [NSNumber]()
         omemoStorage.storeOurDevices(thirdDeviceNumbers)
-        let thirdStoredDevices = omemoStorage.getDevicesForParentYapKey(accountKey, yapCollection: accountCollection, trusted:true)
+        let thirdStoredDevices = omemoStorage.getDevicesForParentYapKey(accountKey, yapCollection: accountCollection, trustedOnly:true)
         XCTAssertEqual(thirdStoredDevices.count, 0)
     }
     

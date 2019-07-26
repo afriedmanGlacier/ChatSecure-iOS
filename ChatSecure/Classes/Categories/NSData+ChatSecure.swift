@@ -9,14 +9,14 @@
 import Foundation
 
 
-public extension NSData {
+extension NSData {
     @objc public func hexString() -> String {
         return (self as Data).hexString()
     }
 }
 
 // http://stackoverflow.com/a/26502285/805882
-public extension NSString {
+extension NSString {
     
     /// Create `Data` from hexadecimal string representation
     ///
@@ -25,7 +25,7 @@ public extension NSString {
     /// - returns: Data represented by this hexadecimal string.
     
     @objc public func dataFromHex() -> Data? {
-        let characters = (self as String).characters
+        let characters = (self as String)
         var data = Data(capacity: characters.count / 2)
         
         let regex = try! NSRegularExpression(pattern: "[0-9a-f]{1,2}", options: .caseInsensitive)

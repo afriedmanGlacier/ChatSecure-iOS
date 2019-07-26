@@ -23,13 +23,6 @@
 
 NSString *const kOTRIgnoreDonationDateKey = @"kOTRIgnoreDonationDateKey";
 NSString *const kOTRProtocolLoginSuccess                   = @"LoginSuccessNotification";
-NSString *const kOTRProtocolLoginFail                      = @"LoginFailedNotification";
-NSString *const kOTRProtocolLoginFailErrorKey              = @"ProtocolLoginFailErrorKey";
-NSString *const kOTRProtocolLoginFailSSLStatusKey          = @"kOTRProtocolLoginFailSSLStatusKey";
-NSString *const kOTRProtocolLoginFailHostnameKey           = @"kOTRProtocolLoginFailHostnameKey";
-NSString *const kOTRProtocolLoginFailSSLCertificateDataKey = @"kOTRProtocolLoginFailSSLCertificateData";
-NSString *const kOTRNotificationErrorKey                   = @"kOTRNotificationErrorKey";
-NSString *const kOTRProtocolLoginUserInitiated             = @"kOTRProtocolLoginUserInitiated";
 
 NSString *const kOTRProtocolTypeXMPP = @"xmpp";
 NSString *const kOTRProtocolTypeAIM  = @"prpl-oscar";
@@ -47,6 +40,7 @@ NSString *const kOTRCertificateServiceName = @"org.chatsecure.ChatSecure.Certifi
 
 NSString *const kOTRSettingKeyFontSize                 = @"kOTRSettingKeyFontSize";
 NSString *const kOTRSettingKeyDeleteOnDisconnect       = @"kOTRSettingKeyDeleteOnDisconnect";
+NSString *const kOTRSettingKeyAllowDBPassphraseBackup  = @"kOTRSettingKeyAllowDBPassphraseBackup";
 NSString *const kOTRSettingKeyShowDisconnectionWarning = @"kOTRSettingKeyShowDisconnectionWarning";
 NSString *const kOTRSettingUserAgreedToEULA            = @"kOTRSettingUserAgreedToEULA";
 NSString *const kOTRSettingAccountsKey                 = @"kOTRSettingAccountsKey";
@@ -67,7 +61,6 @@ NSString *const OTRPushAccountDeviceChanged = @"OTRPushAccountDeviceChanged";
 NSString *const OTRPushAccountTokensChanged = @"OTRPushAccountTokensChanged";
 
 
-NSString *const OTRFailedRemoteNotificationRegistration = @"OTRFailedRemoteNotificationRegistration";
 NSString *const OTRSuccessfulRemoteNotificationRegistration = @"OTRSuccessfulRemoteNotificationRegistration";
 
 NSString *const OTRYapDatabasePassphraseAccountName = @"OTRYapDatabasePassphraseAccountName";
@@ -75,15 +68,23 @@ NSString *const OTRYapDatabasePassphraseAccountName = @"OTRYapDatabasePassphrase
 NSString *const OTRYapDatabaseName = @"ChatSecureYap.sqlite";
 
 //Noticications
+NSString *const kOTRNotificationAccountKey = @"kOTRNotificationAccountKey";
 NSString *const kOTRNotificationThreadKey = @"kOTRNotificationThreadKey";
 NSString *const kOTRNotificationThreadCollection = @"kOTRNotificationThreadCollection";
 NSString *const kOTRNotificationType = @"kOTRNotificationType";
 NSString *const kOTRNotificationTypeNone = @"kOTRNotificationTypeNone";
 NSString *const kOTRNotificationTypeSubscriptionRequest = @"kOTRNotificationTypeSubscriptionRequest";
+NSString *const kOTRNotificationTypeApprovedBuddy = @"kOTRNotificationTypeApprovedBuddy";
+NSString *const kOTRNotificationTypeConnectionError = @"kOTRNotificationTypeConnectionError";
+NSString *const kOTRNotificationTypeChatMessage = @"kOTRNotificationTypeChatMessage";
+
 
 //NSUserDefaults
 NSString *const kOTRDeletedFacebookKey = @"kOTRDeletedFacebookKey";
+NSString *const kOTRShowOMEMOGroupEncryptionKey = @"kOTRShowOMEMOGroupEncryptionKey";
+NSString *const kOTREnableDebugLoggingKey = @"kOTREnableDebugLoggingKey";
 
+extern NSString *const kOTREnableDebugLoggingKey;
 //Chatview
 CGFloat const kOTRSentDateFontSize            = 13;
 CGFloat const kOTRDeliveredFontSize           = 13;

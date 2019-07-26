@@ -13,14 +13,13 @@
 
 #import "OTRXMPPAccount.h"
 #import "OTRXMPPTorAccount.h"
-#import "OTRGoogleOAuthXMPPAccount.h"
 #import "OTRDatabaseManager.h"
 @import YapDatabase;
 #import "OTRBuddy.h"
 #import "OTRImages.h"
 #import "NSURL+ChatSecure.h"
 #import "OTRProtocolManager.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRColors.h"
 
 
@@ -63,8 +62,6 @@ NSString *const OTRXMPPTorImageName           = @"xmpp-tor-logo.png";
 
 + (nullable Class) accountClassForAccountType:(OTRAccountType)accountType {
     switch(accountType) {
-        case OTRAccountTypeGoogleTalk:
-            return [OTRGoogleOAuthXMPPAccount class];
         case OTRAccountTypeJabber:
             return [OTRXMPPAccount class];
         case OTRAccountTypeXMPPTor:
@@ -132,8 +129,8 @@ NSString *const OTRXMPPTorImageName           = @"xmpp-tor-logo.png";
 
 - (UIColor *)avatarBorderColor {
     if ([[OTRProtocolManager sharedInstance] existsProtocolForAccount:self]) {
-        id <OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:self];
-        if ([protocol connectionStatus] == OTRProtocolConnectionStatusConnected) {
+        OTRXMPPManager *xmpp = [OTRProtocolManager.shared xmppManagerForAccount:self];
+        if (xmpp.loginStatus == OTRLoginStatusAuthenticated) {
             return [OTRColors colorWithStatus:OTRThreadStatusAvailable];
         }
     }
@@ -247,6 +244,9 @@ NSString *const OTRXMPPTorImageName           = @"xmpp-tor-logo.png";
             [accountsArray addObject:account];
         }
     }];
+    if (accountsArray.count > 1) {
+        DDLogWarn(@"More than one account matching username! %@ %@", username, accountsArray);
+    }
     return accountsArray;
 }
 
@@ -336,7 +336,7 @@ NSString *const OTRXMPPTorImageName           = @"xmpp-tor-logo.png";
     if (fingerprintTypes.count > 0) {
         // We only support OTR fingerprints at the moment
         if ([fingerprintTypes containsObject:@(OTRFingerprintTypeOTR)]) {
-            [[OTRProtocolManager sharedInstance].encryptionManager.otrKit generatePrivateKeyForAccountName:self.username protocol:self.protocolTypeString completion:^(OTRFingerprint * _Nullable fingerprint, NSError * _Nullable error) {
+            [OTRProtocolManager.encryptionManager.otrKit generatePrivateKeyForAccountName:self.username protocol:self.protocolTypeString completion:^(OTRFingerprint * _Nullable fingerprint, NSError * _Nullable error) {
                 
                 if (fingerprint) {
                     NSString *key = [[self class] fingerprintStringTypeForFingerprintType:OTRFingerprintTypeOTR];

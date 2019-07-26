@@ -8,23 +8,20 @@
 
 import Foundation
 
-public extension XMPPMessage {
+extension XMPPMessage {
     /// Safely extracts XEP-0359 stanza-id
-    @objc public func extractStanzaId(account: OTRXMPPAccount) -> String? {
+    @objc public func extractStanzaId(account: OTRXMPPAccount, capabilities: XMPPCapabilities) -> String? {
         let stanzaIds = self.stanzaIds
-        guard stanzaIds.count > 0,
-        let xmpp = OTRProtocolManager.shared.protocol(for: account) as? OTRXMPPManager,
-        xmpp.xmppCapabilities.hasValidStanzaId(self) else {
+        guard stanzaIds.count > 0 else {
             return nil
         }
-        var byJID: XMPPJID? = nil
-        if self.isGroupChatMessage {
-            byJID = self.from?.bareJID
-        } else {
-            byJID = account.bareJID
+        if let myJID = account.bareJID,
+            let sid = stanzaIds[myJID] {
+            return sid
         }
-        if let jid = byJID {
-            return stanzaIds[jid]
+        if let fromJID = self.from?.bareJID,
+            let sid = stanzaIds[fromJID] {
+            return sid
         }
         return nil
     }

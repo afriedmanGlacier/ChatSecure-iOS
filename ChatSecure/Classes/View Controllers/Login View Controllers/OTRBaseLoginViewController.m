@@ -15,7 +15,7 @@
 #import "OTRAccount.h"
 @import MBProgressHUD;
 #import "OTRXLFormCreator.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRXMPPServerInfo.h"
 #import "OTRXMPPAccount.h"
 @import OTRAssets;
@@ -113,7 +113,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
                     // the account is never saved. If the account is never
                     // saved, it's impossible to delete the orphaned password
                     __block BOOL accountExists = NO;
-                    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+                    [[OTRDatabaseManager sharedInstance].uiConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
                         accountExists = [transaction objectForKey:account.uniqueId inCollection:[[OTRAccount class] collection]] != nil;
                     }];
                     if (!accountExists) {
@@ -131,7 +131,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
 - (void) handleSuccessWithNewAccount:(OTRAccount*)account sender:(id)sender {
     NSParameterAssert(account != nil);
     if (!account) { return; }
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].writeConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         [account saveWithTransaction:transaction];
     }];
     
@@ -158,7 +158,7 @@ static NSUInteger kOTRMaxLoginAttempts = 5;
     if (self.existingAccount) {
         [self dismissViewControllerAnimated:YES completion:nil];
     } else {
-        UIViewController *inviteVC = [[OTRAppDelegate appDelegate].theme inviteViewControllerForAccount:self.account];
+        UIViewController *inviteVC = [GlobalTheme.shared inviteViewControllerForAccount:self.account];
         [self.navigationController pushViewController:inviteVC animated:YES];
     }
 }

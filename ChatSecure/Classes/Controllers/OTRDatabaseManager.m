@@ -15,7 +15,6 @@
 #import "OTRConstants.h"
 #import "OTRXMPPAccount.h"
 #import "OTRXMPPTorAccount.h"
-#import "OTRGoogleOAuthXMPPAccount.h"
 #import "OTRAccount.h"
 #import "OTRIncomingMessage.h"
 #import "OTROutgoingMessage.h"
@@ -27,50 +26,63 @@
 @import YapTaskQueue;
 
 #import "OTRSignalSession.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
-
-NSString *const OTRMessagesSecondaryIndex = @"OTRMessagesSecondaryIndex";
-NSString *const OTRYapDatabaseMessageIdSecondaryIndexColumnName = @"OTRYapDatabaseMessageIdSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseRemoteMessageIdSecondaryIndexColumnName = @"OTRYapDatabaseRemoteMessageIdSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName = @"OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseRoomOccupantJidSecondaryIndexColumnName = @"OTRYapDatabaseRoomOccupantJidSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseUnreadMessageSecondaryIndexColumnName = @"OTRYapDatabaseUnreadMessageSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseSignalSessionSecondaryIndexColumnName = @"OTRYapDatabaseSignalSessionSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseSignalPreKeyIdSecondaryIndexColumnName = @"OTRYapDatabaseSignalPreKeyIdSecondaryIndexColumnName";
-NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @"OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName";
+#import "OTRSettingsManager.h"
+#import "OTRXMPPPresenceSubscriptionRequest.h"
+#import "ChatSecureCoreCompat-Swift.h"
 
 
 @interface OTRDatabaseManager ()
 
 @property (nonatomic, strong, nullable) YapDatabase *database;
-@property (nonatomic, strong, nullable) YapDatabaseConnection *readOnlyDatabaseConnection;
-@property (nonatomic, strong, nullable) YapDatabaseConnection *readWriteDatabaseConnection;
 @property (nonatomic, strong, nullable) YapDatabaseActionManager *actionManager;
 @property (nonatomic, strong, nullable) NSString *inMemoryPassphrase;
 
 @property (nonatomic, strong) id yapDatabaseNotificationToken;
+@property (nonatomic, strong) id allowPassphraseBackupNotificationToken;
 @property (nonatomic, readonly, nullable) YapTaskQueueBroker *messageQueueBroker;
 
 @end
 
 @implementation OTRDatabaseManager
+
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        __weak __typeof__(self) weakSelf = self;
+        self.allowPassphraseBackupNotificationToken = [[NSNotificationCenter defaultCenter] addObserverForName:kOTRSettingsValueUpdatedNotification
+                                                                                                        object:kOTRSettingKeyAllowDBPassphraseBackup
+                                                                                                         queue:[NSOperationQueue mainQueue]
+                                                                                                    usingBlock:^(NSNotification *_Nonnull note) {
+                                                                                                        [weakSelf updatePassphraseAccessibility];
+                                                                                                    }];
+    }
+
+    return self;
+}
+
 - (BOOL) setupDatabaseWithName:(NSString*)databaseName {
     return [self setupDatabaseWithName:databaseName withMediaStorage:YES];
 }
 
 - (BOOL) setupDatabaseWithName:(NSString*)databaseName withMediaStorage:(BOOL)withMediaStorage {
+    return [self setupDatabaseWithName:databaseName directory:nil withMediaStorage:withMediaStorage];
+}
+
+- (BOOL)setupDatabaseWithName:(NSString*)databaseName
+                    directory:(nullable NSString*)directory
+             withMediaStorage:(BOOL)withMediaStorage {
     BOOL success = NO;
-    if ([self setupYapDatabaseWithName:databaseName] )
+    if ([self setupYapDatabaseWithName:databaseName directory:directory] )
     {
         success = YES;
     }
     if (success && withMediaStorage) success = [self setupSecureMediaStorage];
     
-    NSString *databaseDirectory = [OTRDatabaseManager yapDatabaseDirectory];
     //Enumerate all files in yap database directory and exclude from backup
-    if (success) success = [[NSFileManager defaultManager] otr_excudeFromBackUpFilesInDirectory:databaseDirectory];
+    if (success) success = [[NSFileManager defaultManager] otr_excudeFromBackUpFilesInDirectory:self.databaseDirectory];
     //fix file protection on existing files
-     if (success) success = [[NSFileManager defaultManager] otr_setFileProtection:NSFileProtectionCompleteUntilFirstUserAuthentication forFilesInDirectory:databaseDirectory];
+     if (success) success = [[NSFileManager defaultManager] otr_setFileProtection:NSFileProtectionCompleteUntilFirstUserAuthentication forFilesInDirectory:self.databaseDirectory];
     return success;
 }
 
@@ -78,12 +90,15 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
     if (self.yapDatabaseNotificationToken != nil) {
         [[NSNotificationCenter defaultCenter] removeObserver:self.yapDatabaseNotificationToken];
     }
+    if (self.allowPassphraseBackupNotificationToken != nil) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self.allowPassphraseBackupNotificationToken];
+    }
 }
 
 - (BOOL)setupSecureMediaStorage
 {
     NSString *password = [self databasePassphrase];
-    NSString *path = [OTRDatabaseManager yapDatabasePathWithName:nil];
+    NSString *path = self.databaseDirectory;
     path = [path stringByAppendingPathComponent:@"ChatSecure-media.sqlite"];
     BOOL success = [[OTRMediaFileManager sharedInstance] setupWithPath:path password:password];
     
@@ -96,7 +111,7 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
     return success;
 }
 
-- (BOOL)setupYapDatabaseWithName:(NSString *)name
+- (BOOL)setupYapDatabaseWithName:(NSString *)name directory:(nullable NSString*)directory
 {
     YapDatabaseOptions *options = [[YapDatabaseOptions alloc] init];
     options.corruptAction = YapDatabaseCorruptAction_Fail;
@@ -108,13 +123,16 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         }
         return keyData;
     };
-    
-    NSString *databaseDirectory = [[self class] yapDatabaseDirectory];
-    if (![[NSFileManager defaultManager] fileExistsAtPath:databaseDirectory]) {
-        [[NSFileManager defaultManager] createDirectoryAtPath:databaseDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    options.cipherCompatability = YapDatabaseCipherCompatability_Version3;
+    _databaseDirectory = [directory copy];
+    if (!_databaseDirectory) {
+        _databaseDirectory = [[self class] defaultYapDatabaseDirectory];
     }
-    NSString *databasePath = [[self class] yapDatabasePathWithName:name];
     
+    if (![[NSFileManager defaultManager] fileExistsAtPath:self.databaseDirectory]) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:self.databaseDirectory withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    NSString *databasePath = [self.databaseDirectory stringByAppendingPathComponent:name];
     
     self.database = [[YapDatabase alloc] initWithPath:databasePath
                                            serializer:nil
@@ -125,26 +143,10 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         return NO;
     }
     
-    self.database.defaultObjectPolicy = YapDatabasePolicyShare;
-    self.database.defaultObjectCacheLimit = 10000;
+    self.database.connectionDefaults.objectPolicy = YapDatabasePolicyShare;
+    self.database.connectionDefaults.objectCacheLimit = 10000;
     
-    self.readOnlyDatabaseConnection = [self.database newConnection];
-    self.readOnlyDatabaseConnection.name = @"readOnlyDatabaseConnection";
-
-    
-    self.readWriteDatabaseConnection = [self.database newConnection];
-    self.readWriteDatabaseConnection.name = @"readWriteDatabaseConnection";
-
-    
-    _longLivedReadOnlyConnection = [self.database newConnection];
-    self.longLivedReadOnlyConnection.name = @"LongLivedReadOnlyConnection";
-    
-#if DEBUG
-    self.readOnlyDatabaseConnection.permittedTransactions = YDB_AnyReadTransaction;
-    // TODO: We can do better work at isolating work between connections
-    //self.readWriteDatabaseConnection.permittedTransactions = YDB_AnyReadWriteTransaction;
-    //self.longLivedReadOnlyConnection.permittedTransactions = YDB_MainThreadOnly;
-#endif
+    [self setupConnections];
     
     __weak __typeof__(self) weakSelf = self;
     self.yapDatabaseNotificationToken = [[NSNotificationCenter defaultCenter] addObserverForName:YapDatabaseModifiedNotification object:self.database queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification * _Nonnull note) {
@@ -158,7 +160,7 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
     }];
     [self.longLivedReadOnlyConnection beginLongLivedReadTransaction];
     
-    _messageQueueHandler = [[MessageQueueHandler alloc] initWithDbConnection:self.readWriteDatabaseConnection];
+    _messageQueueHandler = [[MessageQueueHandler alloc] initWithDbConnection:self.writeConnection];
     
     ////// Register Extensions////////
     
@@ -169,26 +171,32 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         
         [self.database registerExtension:databaseRelationship withName:[YapDatabaseConstants extensionName:DatabaseExtensionNameRelationshipExtensionName]];
         
-        // Register Secondary Index
-        YapDatabaseSecondaryIndex *secondaryIndex = [self setupSecondaryIndexes];
-        [self.database registerExtension:secondaryIndex withName:[YapDatabaseConstants extensionName:DatabaseExtensionNameSecondaryIndexName]];
-        YapDatabaseSecondaryIndex *messageIndex = [self setupMessageSecondaryIndexes];
-        [self.database registerExtension:messageIndex withName:OTRMessagesSecondaryIndex];
-        
+        // Register Secondary Indexes
+        YapDatabaseSecondaryIndex *signalIndex = YapDatabaseSecondaryIndex.signalIndex;
+        [self.database registerExtension:signalIndex withName:SecondaryIndexName.signal];
+        YapDatabaseSecondaryIndex *messageIndex = YapDatabaseSecondaryIndex.messageIndex;
+        [self.database registerExtension:messageIndex withName:SecondaryIndexName.messages];
+        YapDatabaseSecondaryIndex *roomOccupantIndex = YapDatabaseSecondaryIndex.roomOccupantIndex;
+        [self.database registerExtension:roomOccupantIndex withName:SecondaryIndexName.roomOccupants];
+        YapDatabaseSecondaryIndex *buddyIndex = YapDatabaseSecondaryIndex.buddyIndex;
+        [self.database registerExtension:buddyIndex withName:SecondaryIndexName.buddy];
+        YapDatabaseSecondaryIndex *mediaItemIndex = YapDatabaseSecondaryIndex.mediaItemIndex;
+        [self.database registerExtension:mediaItemIndex withName:SecondaryIndexName.mediaItems];
+
         // Register action manager
         self.actionManager = [[YapDatabaseActionManager alloc] init];
         NSString *actionManagerName = [YapDatabaseConstants extensionName:DatabaseExtensionNameActionManagerName];
         [self.database registerExtension:self.actionManager withName:actionManagerName];
         
         [OTRDatabaseView registerAllAccountsDatabaseViewWithDatabase:self.database];
-        [OTRDatabaseView registerConversationDatabaseViewWithDatabase:self.database];
         [OTRDatabaseView registerChatDatabaseViewWithDatabase:self.database];
+        // Order is important - the conversation database view uses the lastMessageWithTransaction: method which in turn uses the OTRFilteredChatDatabaseViewExtensionName view registered above.
+        [OTRDatabaseView registerConversationDatabaseViewWithDatabase:self.database];
         [OTRDatabaseView registerAllBuddiesDatabaseViewWithDatabase:self.database];
-        [OTRDatabaseView registerAllSubscriptionRequestsViewWithDatabase:self.database];
         
         
         NSString *name = [YapDatabaseConstants extensionName:DatabaseExtensionNameMessageQueueBrokerViewName];
-        _messageQueueBroker = [YapTaskQueueBroker setupWithDatabase:self.database name:name handler:self.messageQueueHandler error:nil];
+        self->_messageQueueBroker = [YapTaskQueueBroker setupWithDatabase:self.database name:name handler:self.messageQueueHandler error:nil];
         
         
         //Register Buddy username & displayName FTS and corresponding view
@@ -199,6 +207,11 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         YapDatabaseSearchResultsView *searchResultsView = [[YapDatabaseSearchResultsView alloc] initWithFullTextSearchName:FTSName parentViewName:AllBuddiesName versionTag:nil options:nil];
         NSString* viewName = [YapDatabaseConstants extensionName:DatabaseExtensionNameBuddySearchResultsViewName];
         [self.database registerExtension:searchResultsView withName:viewName];
+        
+        // Remove old unused objects
+        [self.writeConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+            [transaction removeAllObjectsInCollection:OTRXMPPPresenceSubscriptionRequest.collection];
+        }];
     };
     
 #if DEBUG
@@ -218,95 +231,35 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         return YES;
     }
     else {
-        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:Database_Error_String() message:Could_Not_Decrypt_Database() delegate:nil cancelButtonTitle:OK_STRING() otherButtonTitles:nil];
-        [alert show];
         return NO;
     }
+}
+
+- (void) setupConnections {
+    _uiConnection = [self.database newConnection];
+    self.uiConnection.name = @"uiConnection";
+    
+    _readConnection = [self.database newConnection];
+    self.readConnection.name = @"readConnection";
+    
+    _writeConnection = [self.database newConnection];
+    self.writeConnection.name = @"writeConnection";
+    
+    _longLivedReadOnlyConnection = [self.database newConnection];
+    self.longLivedReadOnlyConnection.name = @"LongLivedReadOnlyConnection";
+    
+#if DEBUG
+    self.uiConnection.permittedTransactions = YDB_SyncReadTransaction | YDB_MainThreadOnly;
+    self.readConnection.permittedTransactions = YDB_AnyReadTransaction;
+    // TODO: We can do better work at isolating work between connections
+    //self.writeConnection.permittedTransactions = YDB_AnyReadWriteTransaction;
+    self.longLivedReadOnlyConnection.permittedTransactions = YDB_AnyReadTransaction; // | YDB_MainThreadOnly;
+#endif
 }
 
 - (YapDatabaseConnection *)newConnection
 {
     return [self.database newConnection];
-}
-
-- (YapDatabaseSecondaryIndex *)setupMessageSecondaryIndexes {
-    YapDatabaseSecondaryIndexSetup *setup = [[YapDatabaseSecondaryIndexSetup alloc] init];
-    [setup addColumn:OTRYapDatabaseMessageIdSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:OTRYapDatabaseRemoteMessageIdSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:OTRYapDatabaseUnreadMessageSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeInteger];
-    [setup addColumn:SecondaryIndexName.originId withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:SecondaryIndexName.stanzaId withType:YapDatabaseSecondaryIndexTypeText];
-    
-    YapDatabaseSecondaryIndexHandler *indexHandler = [YapDatabaseSecondaryIndexHandler withObjectBlock:^(YapDatabaseReadTransaction * _Nonnull transaction, NSMutableDictionary * _Nonnull dict, NSString * _Nonnull collection, NSString * _Nonnull key, id  _Nonnull object) {
-        if ([object conformsToProtocol:@protocol(OTRMessageProtocol)])
-        {
-            id<OTRMessageProtocol> message = (id <OTRMessageProtocol>)object;
-            if ([[message remoteMessageId] length]) {
-                [dict setObject:[message remoteMessageId] forKey:OTRYapDatabaseRemoteMessageIdSecondaryIndexColumnName];
-            }
-            if ([message messageKey].length) {
-                [dict setObject:[message messageKey] forKey:OTRYapDatabaseMessageIdSecondaryIndexColumnName];
-            }
-            [dict setObject:@(message.isMessageRead) forKey:OTRYapDatabaseUnreadMessageSecondaryIndexColumnName];
-            if (message.threadId) {
-                [dict setObject:message.threadId forKey:OTRYapDatabaseMessageThreadIdSecondaryIndexColumnName];
-            }
-            if (message.originId.length) {
-                [dict setObject:message.originId forKey:SecondaryIndexName.originId];
-            }
-            if (message.stanzaId.length) {
-                [dict setObject:message.stanzaId forKey:SecondaryIndexName.stanzaId];
-            }
-        }
-    }];
-
-    YapDatabaseSecondaryIndex *secondaryIndex = [[YapDatabaseSecondaryIndex alloc] initWithSetup:setup handler:indexHandler versionTag:@"5"];
-    
-    return secondaryIndex;
-}
-
-
-- (YapDatabaseSecondaryIndex *)setupSecondaryIndexes
-{
-    YapDatabaseSecondaryIndexSetup *setup = [[YapDatabaseSecondaryIndexSetup alloc] init];
-    [setup addColumn:OTRYapDatabaseRoomOccupantJidSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:OTRYapDatabaseSignalSessionSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    [setup addColumn:OTRYapDatabaseSignalPreKeyIdSecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeInteger];
-    [setup addColumn:OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName withType:YapDatabaseSecondaryIndexTypeText];
-    
-    YapDatabaseSecondaryIndexHandler *indexHandler = [YapDatabaseSecondaryIndexHandler withObjectBlock:^(YapDatabaseReadTransaction * _Nonnull transaction, NSMutableDictionary * _Nonnull dict, NSString * _Nonnull collection, NSString * _Nonnull key, id  _Nonnull object) {
-        
-        if ([collection isEqualToString:[OTRXMPPRoomOccupant collection]]) {
-            OTRXMPPRoomOccupant *roomOccupant = (OTRXMPPRoomOccupant *)object;
-            if ([roomOccupant.jid length]) {
-                [dict setObject:roomOccupant.jid forKey:OTRYapDatabaseRoomOccupantJidSecondaryIndexColumnName];
-            }
-        }
-        
-        if ([object isKindOfClass:[OTRSignalSession class]]) {
-            OTRSignalSession *session = (OTRSignalSession *)object;
-            if ([session.name length]) {
-                NSString *value = [NSString stringWithFormat:@"%@-%@",session.accountKey, session.name];
-                [dict setObject:value forKey:OTRYapDatabaseSignalSessionSecondaryIndexColumnName];
-            }
-        }
-        
-        if ([object isKindOfClass:[OTRSignalPreKey class]]) {
-            OTRSignalPreKey *preKey = (OTRSignalPreKey *)object;
-            NSNumber *keyId = @(preKey.keyId);
-            if (keyId) {
-                [dict setObject:keyId forKey:OTRYapDatabaseSignalPreKeyIdSecondaryIndexColumnName];
-            }
-            if (preKey.accountKey) {
-                [dict setObject:preKey.accountKey forKey:OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName];
-            }
-        }
-    }];
-    
-    YapDatabaseSecondaryIndex *secondaryIndex = [[YapDatabaseSecondaryIndex alloc] initWithSetup:setup handler:indexHandler versionTag:@"4"];
-    
-    return secondaryIndex;
 }
 
 + (void) deleteLegacyXMPPFiles {
@@ -329,33 +282,34 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
     }
 }
 
-+ (NSString *)yapDatabaseDirectory {
++ (NSString *)defaultYapDatabaseDirectory {
     NSString *applicationSupportDirectory = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES) lastObject];
     NSString *applicationName = [[[NSBundle mainBundle] infoDictionary] valueForKey:(NSString *)kCFBundleNameKey];
     NSString *directory = [applicationSupportDirectory stringByAppendingPathComponent:applicationName];
     return directory;
 }
 
-+ (NSString *)yapDatabasePathWithName:(NSString *)name
++ (NSString *)defaultYapDatabasePathWithName:(NSString *)name
 {
-    
-    return [[self yapDatabaseDirectory] stringByAppendingPathComponent:name];
+    return [[self defaultYapDatabaseDirectory] stringByAppendingPathComponent:name];
 }
 
 + (BOOL)existsYapDatabase
 {
-    return [[NSFileManager defaultManager] fileExistsAtPath:[self yapDatabasePathWithName:OTRYapDatabaseName]];
+    return [[NSFileManager defaultManager] fileExistsAtPath:[self defaultYapDatabasePathWithName:OTRYapDatabaseName]];
 }
 
-- (void) setDatabasePassphrase:(NSString *)passphrase remember:(BOOL)rememeber error:(NSError**)error
+- (BOOL) setDatabasePassphrase:(NSString *)passphrase remember:(BOOL)rememeber error:(NSError**)error
 {
+    BOOL result = YES;
     if (rememeber) {
         self.inMemoryPassphrase = nil;
-        [SAMKeychain setPassword:passphrase forService:kOTRServiceName account:OTRYapDatabasePassphraseAccountName error:error];
+        result = [SAMKeychain setPassword:passphrase forService:kOTRServiceName account:OTRYapDatabasePassphraseAccountName error:error];
     } else {
         [SAMKeychain deletePasswordForService:kOTRServiceName account:OTRYapDatabasePassphraseAccountName];
         self.inMemoryPassphrase = passphrase;
     }
+    return result;
 }
 
 - (BOOL)hasPassphrase
@@ -372,6 +326,24 @@ NSString *const OTRYapDatabaseSignalPreKeyAccountKeySecondaryIndexColumnName = @
         return [SAMKeychain passwordForService:kOTRServiceName account:OTRYapDatabasePassphraseAccountName];
     }
     
+}
+
+- (void)updatePassphraseAccessibility
+{
+    if (self.hasPassphrase && self.inMemoryPassphrase == nil) {
+        BOOL allowBackup = [OTRSettingsManager boolForOTRSettingKey:kOTRSettingKeyAllowDBPassphraseBackup];
+
+        CFTypeRef previousAccessibilityType = [SAMKeychain accessibilityType];
+        [SAMKeychain setAccessibilityType:allowBackup ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly];
+
+        NSError *error = nil;
+        [self setDatabasePassphrase:self.databasePassphrase remember:YES error:&error];
+        if (error) {
+            DDLogError(@"Password Error: %@",error);
+        }
+
+        [SAMKeychain setAccessibilityType:previousAccessibilityType];
+    }
 }
 
 #pragma - mark Singlton Methodd

@@ -11,5 +11,8 @@ DerivedData
 
 Pods/
 Carthage/
+com.mono0926.LicensePlist.Output/
 
 Secrets.plist
+Preview.html
+fastlane/report.xml

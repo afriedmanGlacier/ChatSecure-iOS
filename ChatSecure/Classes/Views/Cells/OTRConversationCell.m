@@ -18,7 +18,7 @@
 #import "OTRVideoItem.h"
 @import OTRAssets;
 @import YapDatabase;
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 
 @interface OTRConversationCell ()
 
@@ -89,10 +89,14 @@
     __block NSUInteger unreadMessages = 0;
     __block OTRMediaItem *mediaItem = nil;
     
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    /// this is so we can show who sent a group message
+    __block OTRXMPPBuddy *groupBuddy = nil;
+    
+    [[OTRDatabaseManager sharedInstance].uiConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         account = [transaction objectForKey:[thread threadAccountIdentifier] inCollection:[OTRAccount collection]];
         unreadMessages = [thread numberOfUnreadMessagesWithTransaction:transaction];
         lastMessage = [thread lastMessageWithTransaction:transaction];
+        groupBuddy = [lastMessage buddyWithTransaction:transaction];
         if (lastMessage.messageMediaItemKey) {
             mediaItem = [OTRMediaItem fetchObjectWithUniqueID:lastMessage.messageMediaItemKey transaction:transaction];
         }
@@ -104,6 +108,21 @@
     CGFloat fontSize = currentFont.pointSize;
     NSError *messageError = lastMessage.messageError;
     NSString *messageText = lastMessage.messageText;
+    if (!messageText) {
+        messageText = @"";
+    }
+    
+    NSString *messageTextPrefix = @"";
+    if (!lastMessage.isMessageIncoming) {
+        NSString *you = GROUP_INFO_YOU().localizedCapitalizedString;
+        messageTextPrefix = [NSString stringWithFormat:@"%@: ", you];
+    } else if (thread.isGroupThread) {
+        NSString *displayName = groupBuddy.displayName;
+        if (displayName.length) {
+            messageTextPrefix = [NSString stringWithFormat:@"%@: ", displayName];
+        }
+    }
+    
     if (messageError &&
         !messageError.isAutomaticDownloadError) {
         if (!messageText.length) {
@@ -111,9 +130,9 @@
         }
         self.conversationLabel.text = [NSString stringWithFormat:@"⚠️ %@", messageText];
     } else if (mediaItem) {
-        self.conversationLabel.text = mediaItem.displayText;
+        self.conversationLabel.text = [messageTextPrefix stringByAppendingString:mediaItem.displayText];
     } else {
-        self.conversationLabel.text = messageText;
+        self.conversationLabel.text = [messageTextPrefix stringByAppendingString:messageText];
     }
     if (unreadMessages > 0) {
         //unread message
@@ -137,6 +156,9 @@
 
 - (NSString *)dateString:(NSDate *)messageDate
 {
+    if (!messageDate) {
+        return @"";
+    }
     NSTimeInterval timeInterval = fabs([messageDate timeIntervalSinceNow]);
     NSString * dateString = nil;
     if (timeInterval < 60){

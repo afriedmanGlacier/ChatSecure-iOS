@@ -27,12 +27,26 @@ import CocoaLumberjack
 
 open class OTRXMPPRoomMessage: OTRYapDatabaseObject {
     
-    @objc open static let roomEdgeName = "OTRRoomMesageEdgeName"
+    @objc public static let roomEdgeName = "OTRRoomMesageEdgeName"
     
     @objc open var roomJID:String?
-    /** This is the full JID of the sender. This should be equal to the occupant.jid*/
+    /** This is the full JID of the sender within the room. This should be equal to the occupant.jid*/
     @objc open var senderJID:String?
-    @objc open var displayName:String?
+    
+    /** This is the "real" JID of the non-anonymous buddy if it can be directly inferred from the message*/
+    @objc private var _realJID:String?
+    
+    /** This is the "real" JID of the non-anonymous buddy if it can be directly inferred from the message*/
+    open var realJID: XMPPJID? {
+        get {
+            guard let jid = _realJID else { return nil }
+            return XMPPJID(string: jid)
+        }
+        set {
+            _realJID = newValue?.full
+        }
+    }
+    
     @objc open var state:RoomMessageState = .received
     @objc open var deliveredDate = Date.distantPast
     @objc open var messageText:String?
@@ -44,11 +58,65 @@ open class OTRXMPPRoomMessage: OTRYapDatabaseObject {
     @objc open var roomUniqueId:String?
     @objc open var originId:String?
     @objc open var stanzaId:String?
+    @objc open var buddyUniqueId:String?
+    /// this will either be plaintext or OMEMO
+    @objc open var messageSecurityInfo: OTRMessageEncryptionInfo? = nil
     
     open override var hash: Int {
         get {
             return super.hash
         }
+    }
+}
+
+extension OTRXMPPRoomMessage {
+    public convenience init(message: XMPPMessage, delayed: Date?, room: OTRXMPPRoom, transaction: YapDatabaseReadTransaction) {
+        self.init()
+        xmppId = message.elementID
+        messageText = message.body
+        if let date = delayed {
+            messageDate = date
+        } else if let date = message.delayedDeliveryDate {
+            messageDate = date
+        } else {
+            messageDate = Date()
+        }
+        senderJID = message.from?.full
+        roomJID = room.roomJID?.bare
+        // compare with lowercase-only because sometimes
+        // we get both lowercase and uppercase nicknames?
+        if room.ourJID?.full.lowercased() == message.from?.full.lowercased() {
+            state = .sent
+        } else {
+            state = .received
+        }
+        roomUniqueId = room.uniqueId
+        
+        
+        // Try to find buddy of sender. We might get an muc#user item element from where we can pull the real jid of the sender, else we try by message.senderJID.
+        if let x = message.element(forName: "x", xmlns: XMPPMUCUserNamespace),
+            let item = x.element(forName: "item"),
+            let jidString = item.attribute(forName: "jid")?.stringValue,
+            let jid = XMPPJID(string: jidString) {
+            realJID = jid
+        }
+        // first try to scoop out buddy from realJID
+        if let realJID = realJID,
+             let accountId = room.accountUniqueId {
+            if let buddy = OTRXMPPBuddy.fetchBuddy(jid: realJID, accountUniqueId: accountId, transaction: transaction)  {
+                buddyUniqueId = buddy.uniqueId
+            }
+        }
+        // if that fails, try to get an existing occupant
+        if buddyUniqueId == nil,
+            let accountId = room.accountUniqueId,
+            let senderJID = message.from,
+            let roomJID = room.roomJID,
+            let occupant = OTRXMPPRoomOccupant.occupant(jid: senderJID, realJID: realJID, roomJID: roomJID, accountId: accountId, createIfNeeded: false, transaction: transaction) {
+            buddyUniqueId = occupant.buddyUniqueId
+        }
+        
+        read = false
     }
 }
 
@@ -65,6 +133,13 @@ extension OTRXMPPRoomMessage:YapDatabaseRelationshipNode {
 }
 
 extension OTRXMPPRoomMessage:OTRMessageProtocol {
+    public func buddy(with transaction: YapDatabaseReadTransaction) -> OTRXMPPBuddy? {
+        guard let uid = self.buddyUniqueId else {
+            return nil
+        }
+        return OTRXMPPBuddy.fetchObject(withUniqueID: uid, transaction: transaction)
+    }
+    
     public func duplicateMessage() -> OTRMessageProtocol {
         let newMessage = OTRXMPPRoomMessage()!
         newMessage.messageText = self.messageText
@@ -73,10 +148,10 @@ extension OTRXMPPRoomMessage:OTRMessageProtocol {
         newMessage.roomUniqueId = self.roomUniqueId
         newMessage.roomJID = self.roomJID
         newMessage.senderJID = self.senderJID
-        newMessage.displayName = self.displayName
         newMessage.messageSecurity = self.messageSecurity
         newMessage.state = .needsSending
         newMessage.xmppId = UUID().uuidString
+        newMessage.originId = newMessage.xmppId
         return newMessage
     }
     
@@ -142,10 +217,10 @@ extension OTRXMPPRoomMessage:OTRMessageProtocol {
     
     public var messageSecurity: OTRMessageTransportSecurity {
         get {
-            return .plaintext;
+            return self.messageSecurityInfo?.messageSecurity ?? .plaintext;
         }
         set {
-            // currently only plaintext is supported
+            self.messageSecurityInfo = OTRMessageEncryptionInfo(messageSecurity: newValue)
         }
     }
     
@@ -161,22 +236,24 @@ extension OTRXMPPRoomMessage:OTRMessageProtocol {
 
 public class OTRGroupDownloadMessage: OTRXMPPRoomMessage, OTRDownloadMessage {
     
-    private var parentMessageKey: String?
-    private var parentMessageCollection: String?
-    private var downloadURL: URL?
+    @objc private var parentMessageKey: String?
+    @objc private var parentMessageCollection: String?
+    @objc private var downloadURL: URL?
     
     public static func download(withParentMessage parentMessage: OTRMessageProtocol, url: URL) -> OTRDownloadMessage {
         let download = OTRGroupDownloadMessage()!
-        
+        if let parent = parentMessage as? OTRXMPPRoomMessage {
+            download.buddyUniqueId = parent.buddyUniqueId
+        }
         download.downloadURL = url
         download.parentMessageKey = parentMessage.messageKey
         download.parentMessageCollection = parentMessage.messageCollection
         download.messageText = url.absoluteString
+        download.messageSecurity = parentMessage.messageSecurity
         download.messageDate = parentMessage.messageDate
         download.roomUniqueId = parentMessage.threadId
         if let groupMessage = parentMessage as? OTRXMPPRoomMessage {
             download.senderJID = groupMessage.senderJID
-            download.displayName = groupMessage.displayName
             download.roomJID = groupMessage.roomJID
         }
         return download
@@ -187,7 +264,12 @@ public class OTRGroupDownloadMessage: OTRXMPPRoomMessage, OTRDownloadMessage {
     }
     
     public var url: URL? {
-        return self.downloadURL
+        if let url = self.downloadURL {
+            return url
+        } else if let urlString = self.messageText {
+            return URL(string: urlString)
+        }
+        return nil
     }
     
     public func parentMessage(with transaction: YapDatabaseReadTransaction) -> OTRMessageProtocol? {
@@ -303,7 +385,7 @@ extension OTRXMPPRoomMessage:JSQMessageData {
     
     public func senderId() -> String! {
         var result:String? = nil
-        OTRDatabaseManager.sharedInstance().readOnlyDatabaseConnection?.read { (transaction) -> Void in
+        OTRDatabaseManager.sharedInstance().uiConnection?.read { (transaction) -> Void in
             if (self.state.incoming()) {
                 result = self.senderJID
             } else {
@@ -313,11 +395,15 @@ extension OTRXMPPRoomMessage:JSQMessageData {
                 result = thread.accountUniqueId
             }
         }
+        assert(result != nil)
         return result
     }
     
     public func senderDisplayName() -> String! {
-        return self.displayName ?? ""
+        if let sender = self.senderJID, let jid = XMPPJID(string: sender), let resource = jid.resource {
+            return resource
+        }
+        return self.senderJID ?? ""
     }
     
     public func date() -> Date {
@@ -348,7 +434,7 @@ extension OTRXMPPRoomMessage:JSQMessageData {
             return nil
         }
         var media: JSQMessageMediaData? = nil
-        OTRDatabaseManager.shared.readOnlyDatabaseConnection?.read({ (transaction) in
+        OTRDatabaseManager.shared.uiConnection?.read({ (transaction) in
             media = OTRMediaItem.fetchObject(withUniqueID: mediaId, transaction: transaction)
         })
         return media
@@ -356,7 +442,30 @@ extension OTRXMPPRoomMessage:JSQMessageData {
     
 }
 
-public extension OTRXMPPRoomMessage {
+extension OTRXMPPRoomMessage {
+    
+    public func room(_ transaction: YapDatabaseReadTransaction) -> OTRXMPPRoom? {
+        return threadOwner(with: transaction) as? OTRXMPPRoom
+    }
+    
+    /// Getting all buddies for a room message to faciliate OMEMO group encryption
+    public func allBuddyKeysForOutgoingMessage(_ transaction: YapDatabaseReadTransaction) -> [String] {
+        guard let roomId = roomUniqueId else {
+            return []
+        }
+        
+        let buddyKeys = OTRXMPPRoom.allOccupantKeys(roomUniqueId: roomId, transaction: transaction).compactMap {
+            OTRXMPPRoomOccupant.fetchObject(withUniqueID: $0, transaction: transaction)
+            }.compactMap {
+            $0.buddyUniqueId
+        }
+        
+        return buddyKeys
+    }
+}
+
+// MARK: Delivery receipts
+extension OTRXMPPRoomMessage {
     /// Marks our sent messages as delivered when we receive a matching receipt
     @objc public static func handleDeliveryReceiptResponse(message: XMPPMessage, writeConnection: YapDatabaseConnection) {
         guard message.isGroupChatMessage,
@@ -390,7 +499,36 @@ public extension OTRXMPPRoomMessage {
         let response = message.generateReceiptResponse else {
             return
         }
+        // Don't send receipts for messages that you've sent
+        if message.mucUserJID == xmppStream.myJID?.bareJID {
+            return
+        }
         xmppStream.send(response)
     }
 
+}
+
+extension XMPPRoom {
+    @objc public func sendRoomMessage(_ message: OTRXMPPRoomMessage) {
+        let elementId = message.xmppId ?? message.uniqueId
+        let body = XMLElement(name: "body", stringValue: message.messageText)
+        let xmppMessage = XMPPMessage(messageType: nil, to: nil, elementID: elementId, child: body)
+        xmppMessage.addReceiptRequest()
+        let originId = message.originId ?? message.xmppId ?? message.uniqueId
+        xmppMessage.addOriginId(originId)
+        send(xmppMessage)
+    }
+}
+
+extension XMPPMessage {
+    /// Gets the non-anonymous user JID from MUC message
+    /// <x xmlns="http://jabber.org/protocol/muc#user"><item jid="user@example.com" affiliation="member" role="participant"/></x>
+    public var mucUserJID: XMPPJID? {
+        let x = element(forName: "x", xmlns: "http://jabber.org/protocol/muc#user")
+        let item = x?.element(forName: "item")
+        guard let jidString = item?.attributeStringValue(forName: "jid") else {
+            return nil
+        }
+        return XMPPJID(string: jidString)
+    }
 }

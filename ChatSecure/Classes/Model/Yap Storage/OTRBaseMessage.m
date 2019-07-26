@@ -19,7 +19,7 @@
 @import CocoaLumberjack;
 #import "OTRLog.h"
 #import "OTRMessageEncryptionInfo.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 
 @interface OTRBaseMessage()
 @property (nonatomic) BOOL transportedSecurely;
@@ -236,10 +236,10 @@
     return nil;
 }
 
-- (nullable OTRBuddy*) buddyWithTransaction:(nonnull YapDatabaseReadTransaction*)transaction {
+- (nullable OTRXMPPBuddy*) buddyWithTransaction:(nonnull YapDatabaseReadTransaction*)transaction {
     id <OTRThreadOwner> threadOwner = [self threadOwnerWithTransaction:transaction];
-    if ([threadOwner isKindOfClass:[OTRBuddy class]]) {
-        return (OTRBuddy*)threadOwner;
+    if ([threadOwner isKindOfClass:[OTRXMPPBuddy class]]) {
+        return (OTRXMPPBuddy*)threadOwner;
     }
     return nil;
 }

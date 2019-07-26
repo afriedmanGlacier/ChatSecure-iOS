@@ -41,16 +41,12 @@ open class OTROMEMOStorageManager {
      
      - returns: An Array of OTROMEMODevices. If there are no devices the array will be empty.
      **/
-    open func getDevicesForParentYapKey(_ yapKey:String, yapCollection:String, trusted:Bool?) -> [OTROMEMODevice] {
-        var result:[OTROMEMODevice]?
+    open func getDevicesForParentYapKey(_ yapKey:String, yapCollection:String, trustedOnly:Bool) -> [OMEMODevice] {
+        var result:[OMEMODevice] = []
         self.databaseConnection.read { (transaction) in
-            if let trust = trusted {
-                result = OTROMEMODevice.allDevices(forParentKey: yapKey, collection: yapCollection, trusted: trust, transaction: transaction)
-            } else {
-                result = OTROMEMODevice.allDevices(forParentKey: yapKey, collection: yapCollection, transaction: transaction)
-            }
+            result = OMEMODevice.allDevices(forParentKey: yapKey, collection: yapCollection, trustedOnly: trustedOnly, transaction: transaction)
         }
-        return result ?? [OTROMEMODevice]();
+        return result
     }
     
     /**
@@ -58,8 +54,8 @@ open class OTROMEMOStorageManager {
      
      - returns: An Array of OTROMEMODevices. If there are no devices the array will be empty.
      */
-    open func getDevicesForOurAccount(_ trusted:Bool?) -> [OTROMEMODevice] {
-        return self.getDevicesForParentYapKey(self.accountKey, yapCollection: self.accountCollection, trusted: trusted)
+    open func getDevicesForOurAccount(trustedOnly:Bool) -> [OMEMODevice] {
+        return self.getDevicesForParentYapKey(self.accountKey, yapCollection: self.accountCollection, trustedOnly: trustedOnly)
     }
     
     /**
@@ -69,18 +65,15 @@ open class OTROMEMOStorageManager {
      
      - returns: An Array of OTROMEMODevices. If there are no devices the array will be empty.
      */
-    open func getDevicesForBuddy(_ username:String, trusted:Bool?) -> [OTROMEMODevice] {
-        var result:[OTROMEMODevice]?
+    open func getDevicesForBuddy(_ username:String, trustedOnly:Bool) -> [OMEMODevice] {
+        guard let jid = XMPPJID(string: username) else { return [] }
+        var result: [OMEMODevice] = []
         self.databaseConnection.read { (transaction) in
-            if let buddy = OTRBuddy.fetch(withUsername: username, withAccountUniqueId: self.accountKey, transaction: transaction) {
-                if let trust = trusted {
-                    result = OTROMEMODevice.allDevices(forParentKey: buddy.uniqueId, collection: OTRBuddy.collection, trusted: trust, transaction: transaction)
-                } else {
-                    result = OTROMEMODevice.allDevices(forParentKey: buddy.uniqueId, collection: OTRBuddy.collection, transaction: transaction)
-                }
+            if let buddy = OTRXMPPBuddy.fetchBuddy(jid: jid, accountUniqueId: self.accountKey, transaction: transaction) {
+                result = self.getDevicesForParentYapKey(buddy.uniqueId, yapCollection: OTRXMPPBuddy.collection, trustedOnly: trustedOnly)
             }
         }
-        return result ?? [OTROMEMODevice]();
+        return result
     }
     
     /**
@@ -93,7 +86,7 @@ open class OTROMEMOStorageManager {
      */
     fileprivate func storeDevices(_ devices:[NSNumber], parentYapKey:String, parentYapCollection:String, transaction:YapDatabaseReadWriteTransaction) {
         
-        let previouslyStoredDevices = OTROMEMODevice.allDevices(forParentKey: parentYapKey, collection: parentYapCollection, transaction: transaction)
+        let previouslyStoredDevices = OMEMODevice.allDevices(forParentKey: parentYapKey, collection: parentYapCollection, transaction: transaction)
         let previouslyStoredDevicesIds = previouslyStoredDevices.map({ (device) -> NSNumber in
             return device.deviceId
         })
@@ -112,13 +105,13 @@ open class OTROMEMOStorageManager {
             
             // Instead of fulling removing devices, mark them as removed for historical purposes
             devicesToRemove.forEach({ (deviceId) in
-                let deviceKey = OTROMEMODevice.yapKey(withDeviceId: deviceId, parentKey: parentYapKey, parentCollection: parentYapCollection)
-                guard var device = transaction.object(forKey: deviceKey, inCollection: OTROMEMODevice.collection) as? OTROMEMODevice else {
+                let deviceKey = OMEMODevice.yapKey(withDeviceId: deviceId, parentKey: parentYapKey, parentCollection: parentYapCollection)
+                guard var device = transaction.object(forKey: deviceKey, inCollection: OMEMODevice.collection) as? OMEMODevice else {
                     return
                 }
-                device = device.copy() as! OTROMEMODevice
+                device = device.copy() as! OMEMODevice
                 device.trustLevel = .removed
-                transaction.setObject(device, forKey: device.uniqueId, inCollection: OTROMEMODevice.collection)
+                transaction.setObject(device, forKey: device.uniqueId, inCollection: OMEMODevice.collection)
             })
             
             devicesToAdd.forEach({ (deviceId) in
@@ -129,7 +122,7 @@ open class OTROMEMOStorageManager {
                     trustLevel = .trustedTofu
                 }
                 
-                let newDevice = OTROMEMODevice(deviceId: deviceId, trustLevel:trustLevel, parentKey: parentYapKey, parentCollection: parentYapCollection, publicIdentityKeyData: nil, lastSeenDate:Date())
+                let newDevice = OMEMODevice(deviceId: deviceId, trustLevel:trustLevel, parentKey: parentYapKey, parentCollection: parentYapCollection, publicIdentityKeyData: nil, lastSeenDate:Date())
                 newDevice.save(with: transaction)
             })
             
@@ -156,22 +149,13 @@ open class OTROMEMOStorageManager {
     open func storeBuddyDevices(_ devices:[NSNumber], buddyUsername:String, completion:(()->Void)?) {
         self.databaseConnection.asyncReadWrite { (transaction) in
             // Fetch the buddy from the database.
-            var buddy = OTRBuddy.fetch(withUsername: buddyUsername, withAccountUniqueId: self.accountKey, transaction: transaction)
-            // If this is teh first launch the buddy will not be in the buddy list becuase the roster comes in after device list from PEP.
-            // So we create a buddy witht the minimial information we have in order to save the device list.
-            if (buddy == nil) {
-                buddy = OTRXMPPBuddy()
-                buddy?.username = buddyUsername
-                buddy?.accountUniqueId = self.accountKey
-                buddy?.save(with: transaction)
+            guard let jid = XMPPJID(string: buddyUsername), let buddy = OTRXMPPBuddy.fetchBuddy(jid: jid, accountUniqueId: self.accountKey, transaction: transaction) else {
+                // If this is teh first launch the buddy will not be in the buddy list becuase the roster comes in after device list from PEP.
+                DDLogWarn("Could not find buddy to store devices \(buddyUsername)")
+                return
             }
-            if let bud = buddy {
-                self.storeDevices(devices, parentYapKey: bud.uniqueId, parentYapCollection: type(of: bud).collection, transaction: transaction)
-                if let completion = completion {
-                    completion()
-                }
-            }
-            
+            self.storeDevices(devices, parentYapKey: buddy.uniqueId, parentYapCollection: buddy.threadCollection, transaction: transaction)
+            completion?()
         }
     }
 }

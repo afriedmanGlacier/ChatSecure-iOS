@@ -23,7 +23,7 @@
 @import XMPPFramework;
 
 #import "NSURL+ChatSecure.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 
 @interface OTRNewBuddyViewController () <QRCodeReaderDelegate>
 
@@ -37,7 +37,7 @@
     
     if (self = [super init]) {
         
-        [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+        [[OTRDatabaseManager sharedInstance].uiConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
             self.account = [OTRAccount fetchObjectWithUniqueID:accountId transaction:transaction];
         }];
     }
@@ -173,6 +173,7 @@
 -(BOOL)textFieldShouldReturn:(UITextField *)textField
 {
     if (textField.returnKeyType == UIReturnKeyDone ) {
+        [textField resignFirstResponder];
         [self doneButtonPressed:textField];
     }
     else{
@@ -198,24 +199,12 @@
     if ([self checkFields]) {
         NSString * newBuddyAccountName = [[self.accountNameTextField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]] lowercaseString];
         NSString * newBuddyDisplayName = [self.displayNameTextField.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
-        __block OTRXMPPBuddy *buddy = nil;
-        [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-            buddy = [OTRXMPPBuddy fetchBuddyWithUsername:newBuddyAccountName withAccountUniqueId:self.account.uniqueId transaction:transaction];
-            if (!buddy) {
-                buddy = [[OTRXMPPBuddy alloc] init];
-                buddy.username = newBuddyAccountName;
-                buddy.accountUniqueId = self.account.uniqueId;
-                buddy.pendingApproval = YES;
-                // hack to show buddy in conversations view
-                buddy.lastMessageId = @"";
-            }
-            
-            buddy.displayName = newBuddyDisplayName;
-            [buddy saveWithTransaction:transaction];
-        }];
         
-        id<OTRProtocol> protocol = [[OTRProtocolManager sharedInstance] protocolForAccount:self.account];
-        [protocol addBuddy:buddy];
+        XMPPJID *jid = [XMPPJID jidWithString:newBuddyAccountName];
+        if (!jid) { return; }
+        
+        OTRXMPPManager *manager = (OTRXMPPManager *)[[OTRProtocolManager sharedInstance] protocolForAccount:self.account];
+        OTRXMPPBuddy *buddy = [manager addToRosterWithJID:jid displayName:newBuddyDisplayName];
 
         if (self.delegate != nil && [self.delegate respondsToSelector:@selector(controller:didAddBuddy:)]) {
             [self.delegate controller:self didAddBuddy:buddy];
@@ -287,7 +276,7 @@
         NSData *fprintData = [fingerprint dataFromHex];
         if (fprintData) {
             OTRFingerprint *otrFingerprint = [[OTRFingerprint alloc] initWithUsername:username accountName:self.account.username protocol:self.account.protocolTypeString fingerprint:fprintData trustLevel:OTRTrustLevelTrustedUser];
-            [[OTRProtocolManager sharedInstance].encryptionManager.otrKit saveFingerprint:otrFingerprint];
+            [OTRProtocolManager.encryptionManager.otrKit saveFingerprint:otrFingerprint];
         }
     } else {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:Unrecognized_Invite_Format() message:nil preferredStyle:UIAlertControllerStyleAlert];

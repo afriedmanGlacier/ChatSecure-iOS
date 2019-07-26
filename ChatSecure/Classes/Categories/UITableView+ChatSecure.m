@@ -8,7 +8,7 @@
 
 #import "UITableView+ChatSecure.h"
 #import "OTRXMPPBuddy.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRXMPPManager_Private.h"
 @import OTRAssets;
 
@@ -24,7 +24,7 @@
     
     // Bail out if it's a subscription request
     if ([thread isKindOfClass:[OTRXMPPBuddy class]] &&
-        ((OTRXMPPBuddy*)thread).hasIncomingSubscriptionRequest) {
+        [(OTRXMPPBuddy*)thread askingForApproval]) {
         return nil;
     }
 
@@ -43,7 +43,7 @@
             }
             id <OTRThreadOwner> thread = object;
             thread.isArchived = !thread.isArchived;
-            [transaction setObject:thread forKey:key inCollection:collection];
+            [thread saveWithTransaction:transaction];
         }];
     }];
     
@@ -62,8 +62,10 @@
                 account = [OTRAccount fetchObjectWithUniqueID:accountKey transaction:transaction];
             }];
             OTRXMPPManager *xmppManager = (OTRXMPPManager *)[[OTRProtocolManager sharedInstance] protocolForAccount:account];
-            XMPPJID *jid = [XMPPJID jidWithString:room.jid];
-            [xmppManager.roomManager leaveRoom:jid];
+            if (room.roomJID) {
+                [xmppManager.roomManager leaveRoom:room.roomJID];
+            }
+            [xmppManager.roomManager removeRoomsFromBookmarks:@[room]];
             
             //Delete database items
             [connection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {

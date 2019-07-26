@@ -146,6 +146,28 @@ static NSString *const GOOGLE_APP_SCOPE = @"GOOGLE_APP_SCOPE";
     return result;
 }
 
++ (BOOL) allowGroupOMEMO {
+    if (![self allowOMEMO]) {
+        return NO;
+    }
+    BOOL result = [[[self defaultPlist] objectForKey:@"AllowGroupOMEMO"] boolValue];
+    return result;
+}
+
++ (BOOL) allowDebugFileLogging {
+    BOOL result = [[[self defaultPlist] objectForKey:@"AllowDebugFileLogging"] boolValue];
+    return result;
+}
+
++ (BOOL) allowOMEMO {
+    NSNumber *result = [[self defaultPlist] objectForKey:@"AllowOMEMO"];
+    if (!result) {
+        return YES;
+    } else {
+        return result.boolValue;
+    }
+}
+
 /** Returns true if we're running the official ChatSecure */
 + (BOOL) matchesUpstream {
     return [[[NSBundle mainBundle] bundleIdentifier] isEqualToString:@"com.chrisballinger.ChatSecure"];
@@ -176,9 +198,19 @@ static NSString *const GOOGLE_APP_SCOPE = @"GOOGLE_APP_SCOPE";
 
 /** Returns OTRResources.bundle */
 + (NSBundle*) resourcesBundle {
+    // Use resources from main bundle first, assuming the defaults are being overridden
     NSString *folderName = @"OTRResources.bundle";
     NSString *bundlePath = [[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:folderName];
     NSBundle *dataBundle = [NSBundle bundleWithPath:bundlePath];
+    
+    // Usually this is only the case for tests
+    if (!dataBundle) {
+        NSBundle *containingBundle = [NSBundle bundleForClass:self.class];
+        NSString *bundlePath = [[containingBundle resourcePath] stringByAppendingPathComponent:folderName];
+        dataBundle = [NSBundle bundleWithPath:bundlePath];
+    }
+    
+    
     return dataBundle;
 }
 

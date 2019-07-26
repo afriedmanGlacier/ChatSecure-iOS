@@ -8,9 +8,9 @@
 
 #import "OTRXMPPRoomManager.h"
 @import XMPPFramework;
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
-#import "OTRXMPPRoomYapStorage.h"
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRBuddy.h"
+#import "OTRBuddyCache.h"
 @import YapDatabase;
 #import "OTRLog.h"
 
@@ -34,13 +34,20 @@
 
 @implementation OTRXMPPRoomManager
 
-- (instancetype)init {
-    if (self = [super init]) {
+-  (instancetype) initWithDatabaseConnection:(YapDatabaseConnection*)databaseConnection
+                                roomStorage:(RoomStorage*)roomStorage
+                                   archiving:(XMPPMessageArchiveManagement*)archiving
+                               dispatchQueue:(nullable dispatch_queue_t)dispatchQueue {
+    if (self = [super initWithDispatchQueue:dispatchQueue]) {
+        _databaseConnection = databaseConnection;
+        _roomStorage = roomStorage;
+        _archiving = archiving;
         _mucModule = [[XMPPMUC alloc] init];
         _inviteDictionary = [[NSMutableDictionary alloc] init];
         _tempRoomSubject = [[NSMutableDictionary alloc] init];
         _roomsToConfigure = [[NSMutableArray alloc] init];
         _rooms = [[NSMutableDictionary alloc] init];
+        _bookmarksModule = [[XMPPBookmarksModule alloc] initWithMode:XMPPBookmarksModePrivateXmlStorage dispatchQueue:nil];
     }
     return self;
 }
@@ -51,7 +58,20 @@
     [self.mucModule activate:aXmppStream];
     [self.mucModule addDelegate:self delegateQueue:moduleQueue];
     [multicastDelegate addDelegate:self delegateQueue:moduleQueue];
+    
+    [self.bookmarksModule activate:self.xmppStream];
+    
+    //Register view for sending message queue and occupants
+    [self.databaseConnection.database asyncRegisterGroupOccupantsView:nil completionBlock:nil];
+    
     return result;
+}
+
+- (void) deactivate {
+    [self.mucModule removeDelegate:self];
+    [self.mucModule deactivate];
+    [self.bookmarksModule deactivate];
+    [super deactivate];
 }
 
 - (NSString *)joinRoom:(XMPPJID *)jid withNickname:(NSString *)name subject:(NSString *)subject password:(nullable NSString *)password
@@ -62,30 +82,33 @@
         }
     });
     
-    //Register view for sending message queue and occupants
-    [self.databaseConnection.database asyncRegisterGroupOccupantsView:nil completionBlock:nil];
-    
-    
     XMPPRoom *room = [self roomForJID:jid];
     NSString* accountId = self.xmppStream.tag;
     NSString *databaseRoomKey = [OTRXMPPRoom createUniqueId:accountId jid:jid.bare];
+    __block NSString *nickname = name;
+
+    // Already joined? Can happen if we have auto-join bookmarks.
+    if (room && room.isJoined) {
+        return databaseRoomKey;
+    }
     
     if (!room) {
-        OTRXMPPRoomYapStorage *storage = [[OTRXMPPRoomYapStorage alloc] initWithDatabaseConnection:self.databaseConnection];
-        room = [[XMPPRoom alloc] initWithRoomStorage:storage jid:jid];
+        room = [[XMPPRoom alloc] initWithRoomStorage:self.roomStorage jid:jid];
         [self setRoom:room forJID:room.roomJID];
         [room activate:self.xmppStream];
         [room addDelegate:self delegateQueue:moduleQueue];
     }
     
     /** Create room database object */
+    __block id<OTRMessageProtocol> lastMessage = nil;
     [self.databaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
         OTRXMPPRoom *room = [[OTRXMPPRoom fetchObjectWithUniqueID:databaseRoomKey transaction:transaction] copy];
         if(!room) {
             room = [[OTRXMPPRoom alloc] init];
             room.lastRoomMessageId = @""; // Hack to make it show up in list
             room.accountUniqueId = accountId;
-            room.jid = jid.bare;
+            room.roomJID = jid;
+            room.roomUserState = RoomUserStateInvited;
         } else {
             // Clear out roles, we'll getpresence updates once we join
             [self clearOccupantRolesInRoom:room withTransaction:transaction];
@@ -98,12 +121,16 @@
         room.roomPassword = password;
         
         [room saveWithTransaction:transaction];
+        
+        if (!nickname) {
+            OTRXMPPAccount *account = [OTRXMPPAccount fetchObjectWithUniqueID:accountId transaction:transaction];
+            nickname = account.bareJID.user;
+        }
+        lastMessage = [room lastMessageWithTransaction:transaction];
     }];
     
     //Get history if any
     NSXMLElement *historyElement = nil;
-    OTRXMPPRoomYapStorage *storage = room.xmppRoomStorage;
-    id<OTRMessageProtocol> lastMessage = [storage lastMessageInRoom:room accountKey:accountId];
     NSDate *lastMessageDate = [lastMessage messageDate];
     if (lastMessageDate) {
         //Use since as our history marker if we have a last message
@@ -113,7 +140,7 @@
         [historyElement addAttributeWithName:@"since" stringValue:dateTimeString];
     }
     
-    [room joinRoomUsingNickname:name history:historyElement password:password];
+    [room joinRoomUsingNickname:nickname history:historyElement password:password];
     return databaseRoomKey;
 }
 
@@ -137,7 +164,7 @@
     }];
 }
 
-- (NSString *)startGroupChatWithBuddies:(NSArray<NSString *> *)buddiesArray roomJID:(XMPPJID *)roomName nickname:(nonnull NSString *)name subject:(nullable NSString *)subject
+- (NSString *)startGroupChatWithBuddies:(NSArray<NSString *> *)buddiesArray roomJID:(XMPPJID *)roomName nickname:(NSString *)name subject:(nullable NSString *)subject
 {
     if (buddiesArray.count) {
         [self performBlockAsync:^{
@@ -145,45 +172,34 @@
         }];
     }
     [self.roomsToConfigure addObject:roomName.bare];
+    XMPPConferenceBookmark *bookmark = [[XMPPConferenceBookmark alloc] initWithJID:roomName bookmarkName:subject nick:name autoJoin:YES];
+    [self.bookmarksModule fetchAndPublishWithBookmarksToAdd:@[bookmark] bookmarksToRemove:nil completion:^(NSArray<id<XMPPBookmark>> * _Nullable newBookmarks, XMPPIQ * _Nullable responseIq) {
+        if (newBookmarks) {
+            DDLogInfo(@"Joined new room, added to merged bookmarks: %@", newBookmarks);
+        }
+    } completionQueue:nil];
     return [self joinRoom:roomName withNickname:name subject:subject password:nil];
-}
-
-- (void)inviteUser:(XMPPJID *)user toRoom:(XMPPJID *)roomJID withMessage:(NSString *)message
-{
-    XMPPRoom *room = [self roomForJID:roomJID];
-    [room inviteUser:user withMessage:message];
-}
-
-- (OTRXMPPRoomOccupant * _Nullable) roomOccupantForJID:(NSString *)jid realJID:(NSString *)realJID inRoom:(NSString *)roomJID {
-    XMPPRoom *room = [self roomForJID:[XMPPJID jidWithString:roomJID]];
-    __block OTRXMPPRoomOccupant *occupant = nil;
-    if (room != nil && [room.xmppRoomStorage isKindOfClass:OTRXMPPRoomYapStorage.class]) {
-        [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
-            NSString *roomJID = room.roomJID.bare;
-            NSString *accountId = room.xmppStream.tag;
-            occupant = [(OTRXMPPRoomYapStorage*)room.xmppRoomStorage roomOccupantForJID:jid realJID:realJID roomJID:roomJID accountId:accountId inTransaction:transaction alwaysReturnObject:YES];
-        }];
-    }
-    return occupant;
 }
 
 - (void)inviteBuddies:(NSArray<NSString *> *)buddyUniqueIds toRoom:(XMPPRoom *)room {
     if (!buddyUniqueIds.count) {
         return;
     }
-    NSMutableArray<OTRXMPPBuddy*> *buddies = [NSMutableArray arrayWithCapacity:buddyUniqueIds.count];
+    NSMutableArray<XMPPJID*> *buddyJIDs = [NSMutableArray arrayWithCapacity:buddyUniqueIds.count];
     [self.databaseConnection readWithBlock:^(YapDatabaseReadTransaction * _Nonnull transaction) {
         [buddyUniqueIds enumerateObjectsUsingBlock:^(NSString * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
             OTRXMPPBuddy *buddy = [OTRXMPPBuddy fetchObjectWithUniqueID:obj transaction:transaction];
-            if (buddy) {
-                [buddies addObject:buddy];
+            XMPPJID *buddyJID = buddy.bareJID;
+            if (buddyJID) {
+                [buddyJIDs addObject:buddyJID];
             }
         }];
     }];
-    [buddies enumerateObjectsUsingBlock:^(OTRXMPPBuddy * _Nonnull buddy, NSUInteger idx, BOOL * _Nonnull stop) {
-        [self inviteUser:buddy.bareJID toRoom:room.roomJID withMessage:nil];
+    // XMPPRoom.inviteUsers doesn't seem to work, so you have
+    // to send an individual invitation for each person.
+    [buddyJIDs enumerateObjectsUsingBlock:^(XMPPJID * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
+        [room inviteUser:obj withMessage:nil];
     }];
-
 }
 
 #pragma - mark XMPPStreamDelegate Methods
@@ -204,7 +220,7 @@
             
             if ([object isKindOfClass:[OTRXMPPRoom class]]) {
                 OTRXMPPRoom *room = (OTRXMPPRoom *)object;
-                if ([room.jid length]) {
+                if (room.roomJID) {
                     [roomArray addObject:room];
                 }
             }
@@ -218,8 +234,14 @@
         }];
     }];
     [roomArray enumerateObjectsUsingBlock:^(OTRXMPPRoom * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
-        [self joinRoom:[XMPPJID jidWithString:obj.jid] withNickname:nickname subject:obj.subject password:obj.roomPassword];
+        [self joinRoom:obj.roomJID withNickname:nickname subject:obj.subject password:obj.roomPassword];
     }];
+    
+    [self addRoomsToBookmarks:roomArray];
+    
+    [self.bookmarksModule fetchBookmarks:^(NSArray<id<XMPPBookmark>> * _Nullable bookmarks, XMPPIQ * _Nullable responseIq) {
+        
+    } completionQueue:nil];
 }
 
 - (void)xmppStream:(XMPPStream *)sender didFailToSendMessage:(XMPPMessage *)message error:(NSError *)error
@@ -323,7 +345,6 @@
         return;
     }
     __block OTRXMPPBuddy *buddy = nil;
-    NSString *fromJidString = [fromJID bare];
     XMPPStream *stream = self.xmppStream;
     NSString *accountUniqueId = stream.tag;
     __block NSString *nickname = stream.myJID.user;
@@ -332,7 +353,7 @@
         if (account) {
             nickname = account.displayName;
         }
-        buddy = [OTRXMPPBuddy fetchBuddyWithUsername:fromJidString withAccountUniqueId:accountUniqueId transaction:transaction];
+        buddy = [OTRXMPPBuddy fetchBuddyWithJid:fromJID accountUniqueId:accountUniqueId transaction:transaction];
     }];
     // We were invited by someone not on our roster. Shady business!
     if (!buddy) {
@@ -344,53 +365,108 @@
 
 #pragma - mark XMPPRoomDelegate Methods
 
-- (void) xmppRoom:(XMPPRoom *)room didFetchMembersList:(NSArray *)items {
-    DDLogInfo(@"Fetched members list: %@", items);
-    OTRXMPPRoomYapStorage *storage = room.xmppRoomStorage;
-    
-    NSString *accountId = room.xmppStream.tag;
-    [self.databaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+- (OTRXMPPRoom*)roomWithXMPPRoom:(XMPPRoom*)xmppRoom {
+    NSString *databaseRoomKey = [OTRXMPPRoom createUniqueId:self.xmppStream.tag jid:[xmppRoom.roomJID bare]];
+    __block OTRXMPPRoom *room = nil;
+    [self.databaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+        room = [OTRXMPPRoom fetchObjectWithUniqueID:databaseRoomKey transaction:transaction];
+    }];
+    return room;
+}
 
-        [items enumerateObjectsUsingBlock:^(NSXMLElement *item, NSUInteger idx, BOOL * _Nonnull stop) {
-            NSString *jid = [item attributeStringValueForName:@"jid"];
-            if ([jid length]) {
-                // Make sure occupant object exists/is created
-                OTRXMPPRoomOccupant *occupant = [storage roomOccupantForJID:nil realJID:jid roomJID:room.roomJID.bare accountId:accountId inTransaction:transaction alwaysReturnObject:NO];
-                if(!occupant) {
-                    occupant = [[OTRXMPPRoomOccupant alloc] init];
-                    occupant.jid = nil;
-                    occupant.realJID = jid;
-                    occupant.roomUniqueId = [OTRXMPPRoom createUniqueId:accountId jid:room.roomJID.bare];
-                    [occupant saveWithTransaction:transaction];
-                }
-            }
-        }];
+- (OTRXMPPRoomRuntimeProperties *)roomRuntimeProperties:(XMPPRoom*)xmppRoom {
+    OTRXMPPRoom *room = [self roomWithXMPPRoom:xmppRoom];
+    if (room) {
+        return [OTRBuddyCache.shared runtimePropertiesForRoom:room];
+    }
+    return nil;
+}
+
+- (void) xmppRoom:(XMPPRoom *)room didFetchMembersList:(NSArray<NSXMLElement*> *)items {
+    //DDLogInfo(@"Fetched members list: %@", items);
+    [self xmppRoom:room addOccupantItems:items];
+}
+
+- (void) xmppRoom:(XMPPRoom *)room didFetchAdminsList:(NSArray<NSXMLElement*> *)items {
+    //DDLogInfo(@"Fetched admins list: %@", items);
+    [self xmppRoom:room addOccupantItems:items];
+}
+
+- (void) xmppRoom:(XMPPRoom *)room didFetchOwnersList:(NSArray<NSXMLElement*> *)items {
+    //DDLogInfo(@"Fetched owners list: %@", items);
+    [self xmppRoom:room addOccupantItems:items];
+}
+
+- (void)xmppRoom:(XMPPRoom *)room didFetchModeratorsList:(NSArray *)items {
+    //DDLogInfo(@"Fetched moderators list: %@", items);
+    [self xmppRoom:room addOccupantItems:items];
+}
+
+- (void) xmppRoom:(XMPPRoom *)room addOccupantItems:(NSArray<NSXMLElement*> *)items {
+    NSAssert([room.xmppRoomStorage isKindOfClass:RoomStorage.class], @"Wrong room storage class");
+    if ([room.xmppRoomStorage isKindOfClass:RoomStorage.class]) {
+        RoomStorage *roomStorage = (RoomStorage*)room.xmppRoomStorage;
+        [roomStorage insertOccupantItems:items into:room];
+    } else {
+        DDLogError(@"Could not store occupants. Wrong room storage class!");
+    }
+}
+
+- (void)xmppRoomDidCreate:(XMPPRoom *)sender {
+    [self.roomsToConfigure removeObject:sender.roomJID.bare];
+    [sender fetchConfigurationForm];
+}
+
+- (void)xmppRoom:(XMPPRoom *)sender didFetchConfigurationForm:(DDXMLElement *)configForm {
+    [sender configureRoomUsingOptions:[[self class] defaultRoomConfiguration]];
+}
+
+- (void)xmppRoom:(XMPPRoom *)sender didConfigure:(XMPPIQ *)iqResult {
+    //Set Room Subject
+    NSString *subject = [self.tempRoomSubject objectForKey:sender.roomJID.bare];
+    if (subject) {
+        [self.tempRoomSubject removeObjectForKey:sender.roomJID.bare];
+        [sender changeRoomSubject:subject];
+    }
+    
+    //Invite buddies
+    NSArray<NSString*> *buddyUniqueIds = [self.inviteDictionary objectForKey:sender.roomJID.bare];
+    if (buddyUniqueIds) {
+        [self.inviteDictionary removeObjectForKey:sender.roomJID.bare];
+        [self inviteBuddies:buddyUniqueIds toRoom:sender];
+    }
+
+    // Fetch member list. Ideally this would be done after the invites above have been sent to the network, but the messages pass all kinds of async delegates before they are actually sent, so unfortunately we can't wait for that.
+    [self performBlockAsync:^{
+        [self fetchAllListsForRoom:sender];
     }];
 }
 
 - (void)xmppRoomDidJoin:(XMPPRoom *)sender
 {
-    [self performBlockAsync:^{
-        //Configure room if we are the creator
-        if ([self.roomsToConfigure containsObject:sender.roomJID.bare]) {
-            [self.roomsToConfigure removeObject:sender.roomJID.bare];
-            [sender configureRoomUsingOptions:[[self class] defaultRoomConfiguration]];
+    // Older prosody servers have a bug where they consider all room as already
+    // existing, so the status 201 is never sent.
+    if ([self.roomsToConfigure containsObject:sender.roomJID.bare]) {
+        [self xmppRoomDidCreate:sender];
+    } else {
+        // Fetch member list
+        [self performBlockAsync:^{
+            [self fetchAllListsForRoom:sender];
+        }];
+    }
+}
+
+- (void)fetchAllListsForRoom:(XMPPRoom *)xmppRoom {
+    [self beginUpdateAffiliationsInRoom:xmppRoom];
+    [self fetchListsForRoom:xmppRoom callback:^ {
+        OTRXMPPRoomRuntimeProperties *properties = [self roomRuntimeProperties:xmppRoom];
+        // Lists are downloaded, delete stale occupants from the DB
+        [self endUpdateAffiliationsInRoom:xmppRoom];
+        if (properties && !properties.hasFetchedHistory) {
+            // fetch history for the room
+            properties.hasFetchedHistory = YES;
+            [self fetchHistoryFor:xmppRoom];
         }
-        
-        //Set Room Subject
-        NSString *subject = [self.tempRoomSubject objectForKey:sender.roomJID.bare];
-        if (subject) {
-            [self.tempRoomSubject removeObjectForKey:sender.roomJID.bare];
-            [sender changeRoomSubject:subject];
-        }
-        
-        //Invite buddies
-        NSArray<NSString*> *buddyUniqueIds = [self.inviteDictionary objectForKey:sender.roomJID.bare];
-        [self.inviteDictionary removeObjectForKey:sender.roomJID.bare];
-        [self inviteBuddies:buddyUniqueIds toRoom:sender];
-        
-        //Fetch member list
-        [sender fetchMembersList];
     }];
 }
 
@@ -433,22 +509,6 @@
         room = [self.rooms objectForKey:jid.bareJID];
     }];
     return room;
-}
-
-/** Executes block synchronously on moduleQueue */
-- (void) performBlock:(dispatch_block_t)block {
-    if (dispatch_get_specific(moduleQueueTag))
-        block();
-    else
-        dispatch_sync(moduleQueue, block);
-}
-
-/** Executes block asynchronously on moduleQueue */
-- (void) performBlockAsync:(dispatch_block_t)block {
-    if (dispatch_get_specific(moduleQueueTag))
-        block();
-    else
-        dispatch_async(moduleQueue, block);
 }
 
 #pragma - mark Class Methods
@@ -500,18 +560,3 @@
 
 @end
 
-@implementation XMPPRoom(RoomManager)
-- (void) sendRoomMessage:(OTRXMPPRoomMessage *)roomMessage {
-    NSParameterAssert(roomMessage);
-    if (!roomMessage) { return; }
-    NSString *elementId = roomMessage.xmppId;
-    if (!elementId.length) {
-        elementId = roomMessage.uniqueId;
-    }
-    NSXMLElement *body = [NSXMLElement elementWithName:@"body" stringValue:roomMessage.text];
-    // type=groupchat and to=room.full are set inside XMPPRoom.sendMessage
-    XMPPMessage *message = [XMPPMessage messageWithType:nil elementID:roomMessage.xmppId child:body];
-    [message addReceiptRequest];
-    [self sendMessage:message];
-}
-@end

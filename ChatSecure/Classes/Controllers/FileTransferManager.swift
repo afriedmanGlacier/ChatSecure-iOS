@@ -56,7 +56,7 @@ extension UIImage {
                 numTries = numTries + 1
                 newSize = CGSize(width: image.size.width * scaleFactor, height: image.size.height * scaleFactor)
                 let scaledImage = UIImage.otr_image(with: image, scaledTo: newSize)
-                scaledImageData = UIImageJPEGRepresentation(scaledImage, jpegQuality)
+                scaledImageData = scaledImage.jpegData(compressionQuality: jpegQuality)
                 if let imageData = scaledImageData {
                     sizeInBytes = UInt(imageData.count)
                     scaleFactor = scaleFactor * scaleDecrement
@@ -70,7 +70,9 @@ extension UIImage {
     }
 }
 
-public enum FileTransferError: CustomNSError {
+
+
+public enum FileTransferError: LocalizedError, CustomNSError {
     case unknown
     case noServers
     case serverError
@@ -80,8 +82,17 @@ public enum FileTransferError: CustomNSError {
     case keyGenerationError
     case cryptoError
     case automaticDownloadsDisabled
+    case userCanceled
     
-    public var localizedDescription: String {
+    public var errorUserInfo: [String : Any] {
+        if let errorDescription = self.errorDescription {
+            return [NSLocalizedDescriptionKey: errorDescription];
+        }
+        return [:]
+    }
+    
+    // localizedDescription
+    public var errorDescription: String? {
         switch self {
         case .unknown:
             return UNKNOWN_ERROR_STRING()
@@ -99,6 +110,8 @@ public enum FileTransferError: CustomNSError {
             return errSSLCryptoString()
         case .automaticDownloadsDisabled:
             return AUTOMATIC_DOWNLOADS_DISABLED_STRING()
+        case .userCanceled:
+            return USER_CANCELED_STRING()
         }
     }
 }
@@ -139,6 +152,23 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
     }
     
     // MARK: - Public Methods
+    
+    // Resume downloads, i.e. look for media items that are partially downloaded and retry getting them. TODO - use ranges
+    @objc public func resumeDownloads() {
+        /// https://github.com/ChatSecure/ChatSecure-iOS/issues/1034
+        DDLogWarn("WARN: Download resumption is disabled. See https://github.com/ChatSecure/ChatSecure-iOS/issues/1034 for more information.")
+//        connection.asyncRead { [weak self] (transaction) in
+//            let unfinished = transaction.unfinishedDownloads()
+//            self?.internalQueue.async {
+//                for mediaItem in unfinished {
+//                    if let downloadMessage = mediaItem.parentObject(with: transaction) as? OTRDownloadMessage,
+//                        downloadMessage.messageError == nil {
+//                        self?.downloadMedia(downloadMessage)
+//                    }
+//                }
+//            }
+//        }
+    }
     
     /// This will fetch capabilities and setup XMPP transfer module if needed
     @objc public func refreshCapabilities() {
@@ -261,7 +291,21 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
                     }
                     return
                 }
-                self.sessionManager.upload(outData, to: slot.putURL, method: .put)
+                
+                // Pick optional headers from the slot and filter out any not allowed by
+                // XEP-0363 (https://xmpp.org/extensions/xep-0363.html#request)
+                let allowedHeaders = ["authorization", "cookie", "expires"]
+                var forwardedHeaders:HTTPHeaders = [:]
+                for (headerName, headerValue) in slot.putHeaders {
+                    let name = headerName.replacingOccurrences(of: "\n", with: "").lowercased()
+                    if allowedHeaders.contains(name) {
+                        forwardedHeaders[name] = headerValue.replacingOccurrences(of: "\n", with: "")
+                    }
+                }
+                forwardedHeaders["Content-Type"] = contentType
+                forwardedHeaders["Content-Length"] = "\(UInt(outData.count))"
+                
+                self.sessionManager.upload(outData, to: slot.putURL, method: .put, headers: forwardedHeaders)
                     .validate()
                     .responseData(queue: self.callbackQueue) { response in
                         switch response.result {
@@ -289,7 +333,7 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
                             DDLogError("Upload error: \(error)")
                         }
                     }.uploadProgress(queue: self.internalQueue) { progress in
-                        DDLogVerbose("Download progress \(progress.fractionCompleted)")
+                        //DDLogVerbose("Upload progress \(progress.fractionCompleted)")
                         self.connection.asyncReadWrite { transaction in
                             if let media = media.refetch(with: transaction) {
                                 media.transferProgress = Float(progress.fractionCompleted)
@@ -334,7 +378,9 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
             }
             mediaItem.parentObjectKey = message.messageKey
             mediaItem.parentObjectCollection = message.messageCollection
-            let newPath = OTRMediaFileManager.path(for: mediaItem, buddyUniqueId: thread.threadIdentifier)
+            guard let newPath = OTRMediaFileManager.path(for: mediaItem, buddyUniqueId: thread.threadIdentifier) else {
+                return
+            }
             self.connection.readWrite { transaction in
                 message.save(with: transaction)
                 mediaItem.save(with: transaction)
@@ -428,13 +474,14 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
             message.messageSecurityInfo = OTRMessageEncryptionInfo(messageSecurity: security)
             return message
         } else if let room = thread as? OTRXMPPRoom {
-            let message = OTRXMPPRoomMessage()!
-            message.messageDate = Date()
-            message.roomUniqueId = room.threadIdentifier
-            message.roomJID = room.jid
-            message.senderJID = room.ownJID
-            message.state = .needsSending
-            message.mediaItemId = mediaItem.uniqueId
+            var message:OTRXMPPRoomMessage? = nil
+            self.connection.read({ (transaction) in
+                message = room.outgoingMessage(withText: "", transaction: transaction) as? OTRXMPPRoomMessage
+            })
+            if let message = message {
+                message.messageText = nil
+                message.mediaItemId = mediaItem.uniqueId
+            }
             return message
         }
         return nil
@@ -447,6 +494,8 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
             shouldEncrypt = true
         case .invalid, .plaintext, .plaintextWithOTR:
             shouldEncrypt = false
+        @unknown default:
+            fatalError("Unhandled message security value!")
         }
         
         self.upload(mediaItem: mediaItem, shouldEncrypt: shouldEncrypt, prefetchedData: prefetchedData, completion: { (_url: URL?, error: Error?) in
@@ -510,50 +559,52 @@ public class FileTransferManager: NSObject, OTRServerCapabilitiesDelegate {
 extension FileTransferManager {
     
     /** creates downloadmessages and then downloads if needed. parent message should already be saved! @warn Do not call from within an existing db transaction! */
-    @objc public func createAndDownloadItemsIfNeeded(message: OTRMessageProtocol, readConnection: YapDatabaseConnection, force: Bool) {
-        DispatchQueue.global(qos: .default).async {
-            if message.messageMediaItemKey != nil || message.messageText?.characters.count == 0 || message.downloadableURLs.count == 0 {
-                //DDLogVerbose("Download of message not needed \(message.messageKey)")
-                return
-            }
-            var downloads: [OTRDownloadMessage] = []
-            var disableAutomaticURLFetching = false
-            if !force {
-                readConnection.read { (transaction) in
-                    downloads = message.existingDownloads(with: transaction)
-                    if let thread = message.threadOwner(with: transaction), let account = OTRAccount.fetchObject(withUniqueID: thread.threadAccountIdentifier, transaction: transaction) {
-                        disableAutomaticURLFetching = account.disableAutomaticURLFetching
+    @objc public func createAndDownloadItemsIfNeeded(message: OTRMessageProtocol, force: Bool, transaction: YapDatabaseReadWriteTransaction) {
+        if message.messageMediaItemKey != nil || message.messageText?.count == 0 || message.downloadableURLs.count == 0 {
+            //DDLogVerbose("Download of message not needed \(message.messageKey)")
+            return
+        }
+        var downloads: [OTRDownloadMessage] = []
+        var disableAutomaticURLFetching = false
+        if !force {
+            downloads = message.existingDownloads(with: transaction)
+            if let thread = message.threadOwner(with: transaction), let account = OTRAccount.fetchObject(withUniqueID: thread.threadAccountIdentifier, transaction: transaction) {
+                disableAutomaticURLFetching = account.disableAutomaticURLFetching
+                if !disableAutomaticURLFetching, let message = message as? OTRXMPPRoomMessage {
+                    // For room messages, default to safe mode
+                    disableAutomaticURLFetching = true
+                    if let senderBuddy = message.buddyUniqueId, let buddy = OTRXMPPBuddy.fetchObject(withUniqueID: senderBuddy, transaction: transaction), buddy.trustLevel == .roster {
+                        // We have a buddy, i.e. we are friends with the sender.
+                        disableAutomaticURLFetching = false
                     }
                 }
             }
+        }
+        if downloads.count == 0 {
+            downloads = message.downloads()
             if downloads.count == 0 {
-                downloads = message.downloads()
-                if downloads.count == 0 {
-                    return
-                }
-                self.connection.readWrite({ (transaction) in
-                    for download in downloads {
-                        if disableAutomaticURLFetching,
-                            let filename = download.downloadableURL?.absoluteString {
-                            let media = OTRMediaItem.incomingItem(withFilename: filename, mimeType: nil)
-                            media.parentObjectKey = download.uniqueId
-                            media.parentObjectCollection = download.messageCollection
-                            media.save(with: transaction)
-                            download.messageMediaItemKey = media.uniqueId
-                            download.messageError = FileTransferError.automaticDownloadsDisabled
-                        }
-                        download.save(with: transaction)
-                    }
-                    message.touch(with: transaction)
-                })
-            }
-            if disableAutomaticURLFetching {
-                DDLogVerbose("Automatic URL fetching disabled \(message.messageKey)")
                 return
             }
             for download in downloads {
-                self.downloadMediaIfNeeded(download)
+                if disableAutomaticURLFetching,
+                    let filename = download.downloadableURL?.absoluteString {
+                    let media = OTRMediaItem.incomingItem(withFilename: filename, mimeType: nil)
+                    media.parentObjectKey = download.uniqueId
+                    media.parentObjectCollection = download.messageCollection
+                    media.save(with: transaction)
+                    download.messageMediaItemKey = media.uniqueId
+                    download.messageError = FileTransferError.automaticDownloadsDisabled
+                }
+                download.save(with: transaction)
             }
+            message.touch(with: transaction)
+        }
+        if disableAutomaticURLFetching {
+            DDLogVerbose("Automatic URL fetching disabled \(message.messageKey)")
+            return
+        }
+        for download in downloads {
+            self.downloadMediaIfNeeded(download)
         }
     }
     
@@ -565,6 +616,10 @@ extension FileTransferManager {
             // DDLogWarn("Already downloaded media for this item")
             return
         }
+        downloadMedia(downloadMessage)
+    }
+    
+    private func downloadMedia(_ downloadMessage: OTRDownloadMessage) {
         guard let url = downloadMessage.downloadableURL else {
             DDLogWarn("Attempted to download message but couldn't parse a URL \(downloadMessage)")
             return
@@ -597,6 +652,21 @@ extension FileTransferManager {
     private func setError(_ error: Error, onMessage downloadMessage: OTRDownloadMessage) {
         self.connection.readWrite { transaction in
             if let message = downloadMessage.refetch(with: transaction) {
+                
+                // If we have no media item, add one so we can retry
+                if message.messageMediaItemKey == nil, let filename = message.downloadableURL?.absoluteString {
+                    let media = OTRMediaItem.incomingItem(withFilename: filename, mimeType: nil)
+                    media.parentObjectKey = message.uniqueId
+                    media.parentObjectCollection = message.messageCollection
+                    media.save(with: transaction)
+                    message.messageMediaItemKey = media.uniqueId
+                }
+                
+                // If user canceled, keep that error
+                if let error = (message.messageError as NSError?), error.isUserCanceledError {
+                    return
+                }
+                        
                 message.messageError = error
                 message.save(with: transaction)
             }
@@ -609,11 +679,17 @@ extension FileTransferManager {
             // Remove placeholder media item
             mediaItem = OTRMediaItem(forMessage: downloadMessage, transaction: transaction)
             mediaItem?.remove(with: transaction)
-            mediaItem = OTRMediaItem.incomingItem(withFilename: url.lastPathComponent, mimeType: contentType)
+            // If the file is encrypted, the server might not know its type
+            if url.aesGcmKey != nil && contentType == "application/octet-stream" {
+                mediaItem = OTRMediaItem.incomingItem(withFilename: url.lastPathComponent, mimeType: nil)
+            } else {
+                mediaItem = OTRMediaItem.incomingItem(withFilename: url.lastPathComponent, mimeType: contentType)
+            }
             mediaItem?.parentObjectKey = downloadMessage.uniqueId
             mediaItem?.parentObjectCollection = downloadMessage.messageCollection
             mediaItem?.save(with: transaction)
             downloadMessage.messageMediaItemKey = mediaItem?.uniqueId
+            downloadMessage.messageError = nil
             downloadMessage.save(with: transaction)
         }
         guard let media = mediaItem else {
@@ -634,7 +710,7 @@ extension FileTransferManager {
                     DDLogError("Download Error \(error)")
                 }
             }.downloadProgress(queue: self.internalQueue) { progress in
-                DDLogVerbose("Download progress \(progress.fractionCompleted)")
+                //DDLogVerbose("Download progress \(progress.fractionCompleted)")
                 self.connection.asyncReadWrite { transaction in
                     if let media = media.refetch(with: transaction) {
                         media.transferProgress = Float(progress.fractionCompleted)
@@ -652,14 +728,15 @@ extension FileTransferManager {
             return
         }
         guard var data = inData, let response = urlResponse, let url = response.url else {
-            self.setError(FileTransferError.fileNotFound, onMessage: downloadMessage)
-            DDLogError("No data or response")
+            let error = FileTransferError.fileNotFound
+            self.setError(error, onMessage: downloadMessage)
+            DDLogError("No data or response \(error)")
             return
         }
-        DDLogVerbose("Received response \(response)")
+        //DDLogVerbose("Received response \(response)")
         let authTagSize = 16 // i'm not sure if this can be assumed, but how else would we know the size?
         if let (key, iv) = url.aesGcmKey, data.count > authTagSize {
-            DDLogVerbose("Received encrypted response, attempting decryption...")
+            //DDLogVerbose("Received encrypted response, attempting decryption...")
             
             let cryptedData = data.subdata(in: 0..<data.count - authTagSize)
             let authTag = data.subdata(in: data.count - authTagSize..<data.count)
@@ -671,7 +748,7 @@ extension FileTransferManager {
                 DDLogError("Error decrypting data: \(error)")
                 return
             }
-            DDLogVerbose("Decrpytion successful")
+            //DDLogVerbose("Decrpytion successful")
         }
         OTRMediaFileManager.sharedInstance().setData(data, for: mediaItem, buddyUniqueId: downloadMessage.threadId, completion: { (bytesWritten, error) in
             if let error = error {
@@ -694,11 +771,31 @@ extension FileTransferManager {
                 } else {
                     DDLogError("Failed to refetch download message WTF \(downloadMessage)")
                 }
-            }, completionQueue: DispatchQueue.main,
-               completionBlock: {
-                UIApplication.shared.showLocalNotification(downloadMessage)
+                UIApplication.shared.showLocalNotification(downloadMessage, transaction: transaction)
             })
         }, completionQueue: nil)
+    }
+    
+    @objc public func cancelDownload(mediaItem: OTRMediaItem) {
+        self.internalQueue.async {
+            var downloadMessage:OTRDownloadMessage? = nil
+            self.connection.read { transaction in
+                downloadMessage = mediaItem.parentMessage(with: transaction) as? OTRDownloadMessage
+            }
+            if let downloadMessage = downloadMessage {
+                self.setError(FileTransferError.userCanceled, onMessage: downloadMessage)
+                if let url = downloadMessage.downloadableURL {
+                    self.sessionManager.session.getTasksWithCompletionHandler { (tasks, _, _) in
+                        // Bail out if we've already got a task for this
+                        for task in tasks where task.originalRequest?.url == url {
+                            DDLogWarn("Stopping download task: \(task)")
+                            task.cancel()
+                            break
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -716,19 +813,19 @@ extension OTRDownloadMessage {
     }
 }
 
-public extension OTRMessageProtocol {
+extension OTRMessageProtocol {
     public var downloadableURLs: [URL] {
         return self.messageText?.downloadableURLs ?? []
     }
 }
 
-public extension OTRBaseMessage {
+extension OTRBaseMessage {
     @objc public var downloadableNSURLs: [NSURL] {
         return self.downloadableURLs as [NSURL]
     }
 }
 
-public extension OTRXMPPRoomMessage {
+extension OTRXMPPRoomMessage {
     @objc public var downloadableNSURLs: [NSURL] {
         return self.downloadableURLs as [NSURL]
     }
@@ -814,13 +911,13 @@ extension URL {
     }
 }
 
-public extension NSString {
+extension NSString {
     public var isSingleURLOnly: Bool {
         return (self as String).isSingleURLOnly
     }
 }
 
-public extension String {
+extension String {
     
     private var urlRanges: ([URL], [NSRange]) {
         guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else {
@@ -828,7 +925,7 @@ public extension String {
         }
         var urls: [URL] = []
         var ranges: [NSRange] = []
-        let matches = detector.matches(in: self, options: NSRegularExpression.MatchingOptions(rawValue: 0), range: NSMakeRange(0, self.characters.count))
+        let matches = detector.matches(in: self, options: NSRegularExpression.MatchingOptions(rawValue: 0), range: NSMakeRange(0, self.count))
         for match in matches where match.resultType == .link {
             if let url = match.url {
                 urls.append(url)
@@ -849,7 +946,7 @@ public extension String {
         let (_, ranges) = urlRanges
         guard ranges.count == 1,
             let range = ranges.first,
-            range.length == self.characters.count else {
+            range.length == self.count else {
             return false
         }
         return true
@@ -872,7 +969,7 @@ public extension String {
     }
 }
 
-public extension FileTransferManager {
+extension FileTransferManager {
     /// Returns whether or not message should be displayed or hidden from collection. Single incoming URLs should be hidden, for example.
     @objc public static func shouldDisplayMessage(_ message: OTRMessageProtocol, transaction: YapDatabaseReadTransaction) -> Bool {
         // Always show media messages

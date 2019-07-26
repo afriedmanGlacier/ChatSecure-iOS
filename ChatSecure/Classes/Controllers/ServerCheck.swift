@@ -15,35 +15,67 @@ import OTRAssets
  *
  * All public members must be accessed from the main queue.
  */
-public class ServerCheck: NSObject, OTRServerCapabilitiesDelegate, XMPPPushDelegate {
+public class ServerCheck: XMPPModule {
     
-    @objc public weak var xmpp: OTRXMPPManager?
     @objc public let push: PushController
+    @objc public let serverCapabilities: OTRServerCapabilities
+    @objc public let xmppCapabilities: XMPPCapabilities
+    @objc public let pushModule: XMPPPushModule
     
     @objc public var result = ServerCheckResult()
     
     @objc public static let UpdateNotificationName = Notification.Name(rawValue: "ServerCheckUpdateNotification")
 
     deinit {
-        xmpp?.serverCapabilities.removeDelegate(self)
-        xmpp?.xmppPushModule.removeDelegate(self)
         NotificationCenter.default.removeObserver(self)
     }
     
-    
-    @objc public init(xmpp: OTRXMPPManager, push: PushController) {
+    /// pushModule should be activated elsewhere
+    @objc public init(push: PushController,
+                      pushModule: XMPPPushModule,
+                      dispatchQueue: DispatchQueue? = nil) {
         self.push = push
-        self.xmpp = xmpp
-        super.init()
-        xmpp.serverCapabilities.addDelegate(self, delegateQueue: DispatchQueue.main)
-        xmpp.xmppPushModule.addDelegate(self, delegateQueue: DispatchQueue.main)
+        let capsStorage = XMPPCapabilitiesCoreDataStorage(inMemoryStore: ())!
+        let capabilities = XMPPCapabilities(capabilitiesStorage: capsStorage, dispatchQueue: dispatchQueue)
+        self.xmppCapabilities = capabilities
+        self.serverCapabilities = OTRServerCapabilities(capabilities: capabilities, dispatchQueue: dispatchQueue)
+
+        self.pushModule = pushModule
+        super.init(dispatchQueue: dispatchQueue)
+        
+        self.xmppCapabilities.autoFetchHashedCapabilities = true
+        self.xmppCapabilities.autoFetchNonHashedCapabilities = true
+        self.xmppCapabilities.autoFetchMyServerCapabilities = true
+        
+        serverCapabilities.addDelegate(self, delegateQueue: moduleQueue)
+        pushModule.addDelegate(self, delegateQueue: moduleQueue)
         NotificationCenter.default.addObserver(self, selector: #selector(pushAccountChanged(_:)), name: Notification.Name(rawValue: OTRPushAccountDeviceChanged), object: push)
         NotificationCenter.default.addObserver(self, selector: #selector(pushAccountChanged(_:)), name: Notification.Name(rawValue: OTRPushAccountTokensChanged), object: push)
         fetch()
     }
     
+    // MARK: XMPPModule overrides
+    
+    @discardableResult override public func activate(_ xmppStream: XMPPStream) -> Bool {
+        guard super.activate(xmppStream),
+            xmppCapabilities.activate(xmppStream),
+            serverCapabilities.activate(xmppStream)
+            else {
+                return false
+        }
+        return true
+    }
+    
+    public override func deactivate() {
+        serverCapabilities.deactivate()
+        xmppCapabilities.deactivate()
+        super.deactivate()
+    }
+    
+    // MARK: Public API
+    
     @objc public func getCombinedPushStatus() -> ServerCheckPushStatus {
-        if let xmpp = xmpp, xmpp.connectionStatus != .connected {
+        if let xmpp = xmppStream, xmpp.state != .STATE_XMPP_CONNECTED || !xmpp.isAuthenticated {
             return .unknown
         }
         return result.getCombinedPushStatus()
@@ -61,15 +93,15 @@ public class ServerCheck: NSObject, OTRServerCapabilitiesDelegate, XMPPPushDeleg
     /// Must be called from main queue
     @objc public func refresh() {
         result.pushInfo = nil
-        xmpp?.serverCapabilities.fetchAllCapabilities()
+        serverCapabilities.fetchAllCapabilities()
         fetch()
     }
     
     // This will refresh the pushStatusUpdate block
     private func updatePushStatus() {
         guard let push = result.pushInfo, let pubsubEndpoint = push.pubsubEndpoint else { return }
-        if let jid = XMPPJID(user: nil, domain: pubsubEndpoint, resource: nil),
-           let status = xmpp?.xmppPushModule.registrationStatus(forServerJID: jid) {
+        if let jid = XMPPJID(user: nil, domain: pubsubEndpoint, resource: nil) {
+            let status = pushModule.registrationStatus(forServerJID: jid)
             result.pushStatus = status
             postUpdateNotification()
         }
@@ -92,7 +124,9 @@ public class ServerCheck: NSObject, OTRServerCapabilitiesDelegate, XMPPPushDeleg
     }
     
     private func postUpdateNotification() {
-        NotificationCenter.default.post(name: type(of: self).UpdateNotificationName, object: self)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: type(of: self).UpdateNotificationName, object: self)
+        }
     }
     
     private func refreshPush() {
@@ -104,17 +138,25 @@ public class ServerCheck: NSObject, OTRServerCapabilitiesDelegate, XMPPPushDeleg
     
     private func refreshCapabilities() {
         let caps = ServerCapabilityInfo.allCapabilities()
-        result.capabilities = xmpp?.serverCapabilities.markAvailable(capabilities: caps)
+        result.capabilities = serverCapabilities.markAvailable(capabilities: caps)
         checkReady()
     }
     
-    // MARK: - OTRServerCapabilitiesDelegate
+}
+
+// MARK: - OTRServerCapabilitiesDelegate
+
+extension ServerCheck: OTRServerCapabilitiesDelegate {
     
     @objc public func serverCapabilities(_ sender: OTRServerCapabilities, didDiscoverCapabilities capabilities: [XMPPJID : XMLElement]) {
-        checkReady()
+        refreshCapabilities()
     }
     
-    // MARK: - XMPPPushDelegate
+}
+
+// MARK: - XMPPPushDelegate
+
+extension ServerCheck: XMPPPushDelegate {
     
     public func pushModule(_ module: XMPPPushModule, didRegisterWithResponseIq responseIq: XMPPIQ, outgoingIq: XMPPIQ) {
         checkReady()

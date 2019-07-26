@@ -11,7 +11,45 @@ import MWFeedParser
 import UserNotifications
 import OTRAssets
 
-public extension UIApplication {
+public enum NotificationType {
+    case subscriptionRequest
+    case approvedBuddy
+    case connectionError
+    case chatMessage
+}
+
+extension NotificationType: RawRepresentable {
+    public init?(rawValue: String) {
+        if rawValue == kOTRNotificationTypeSubscriptionRequest {
+            self = .subscriptionRequest
+        } else if rawValue == kOTRNotificationTypeApprovedBuddy {
+            self = .approvedBuddy
+        } else if rawValue == kOTRNotificationTypeChatMessage {
+            self = .chatMessage
+        } else if rawValue == kOTRNotificationTypeConnectionError {
+            self = .connectionError
+        } else {
+            return nil
+        }
+    }
+    
+    public var rawValue: String {
+        switch self {
+        case .subscriptionRequest:
+            return kOTRNotificationTypeSubscriptionRequest
+        case .approvedBuddy:
+            return kOTRNotificationTypeApprovedBuddy
+        case .connectionError:
+            return kOTRNotificationTypeConnectionError
+        case .chatMessage:
+            return kOTRNotificationTypeChatMessage
+        }
+    }
+    
+    public typealias RawValue = String
+}
+
+extension UIApplication {
     
     /// Removes all but one foreground notifications for typing and message events sent from APNS
     @objc public func removeExtraForegroundNotifications() {
@@ -26,7 +64,7 @@ public extension UIApplication {
                     } else if notification.request.content.body == SOMEONE_IS_TYPING_STRING() {
                         typingIdentifiers.append(notification.request.identifier)
                     }
-                    DDLogVerbose("notification delivered: \(notification)")
+                    //DDLogVerbose("notification delivered: \(notification)")
                 }
                 if newMessageIdentifiers.count > 1 {
                     _ = newMessageIdentifiers.popLast()
@@ -40,21 +78,24 @@ public extension UIApplication {
         }
     }
     
-    @objc public func showLocalNotification(_ message:OTRMessageProtocol) {
-        var thread:OTRThreadOwner? = nil
-        var unreadCount:UInt = 0
-        var mediaItem: OTRMediaItem? = nil
-        OTRDatabaseManager.sharedInstance().readOnlyDatabaseConnection?.read({ (transaction) -> Void in
-            unreadCount = transaction.numberOfUnreadMessages()
-            thread = message.threadOwner(with: transaction)
-            mediaItem = OTRMediaItem.init(forMessage: message, transaction: transaction)
-        })
-        guard let threadOwner = thread else {
+    @objc public func showLocalNotification(_ message:OTRMessageProtocol, transaction: YapDatabaseReadTransaction) {
+        guard let thread = message.threadOwner(with: transaction) else {
             return
         }
-        let threadName = threadOwner.threadName
+        var unreadCount:UInt = 0
+        var mediaItem: OTRMediaItem? = nil
+        unreadCount = transaction.numberOfUnreadMessages()
+        mediaItem = OTRMediaItem.init(forMessage: message, transaction: transaction)
+        let threadName = thread.threadName
         
         var text = "\(threadName)"
+        
+        // Show author of group messages
+        if thread.isGroupThread,
+            let displayName = message.buddy(with: transaction)?.displayName,
+                displayName.count > 0 {
+            text += " (\(displayName))"
+        }
         
         if let mediaItem = mediaItem {
             let mediaText = mediaItem.displayText()
@@ -70,63 +111,73 @@ public extension UIApplication {
             return
         }
         
-        self.showLocalNotificationFor(threadOwner, text: text, unreadCount: Int(unreadCount))
+        self.showLocalNotificationFor(thread, text: text, unreadCount: Int(unreadCount))
     }
     
     @objc public func showLocalNotificationForKnockFrom(_ thread:OTRThreadOwner?) {
-        var name = SOMEONE_STRING()
-        if let threadName = thread?.threadName {
-            name = threadName
+        DispatchQueue.main.async {
+            var name = SOMEONE_STRING()
+            if let threadName = thread?.threadName {
+                name = threadName
+            }
+            
+            let chatString = WANTS_TO_CHAT_STRING()
+            let text = "\(name) \(chatString)"
+            let unreadCount = self.applicationIconBadgeNumber + 1
+            self.showLocalNotificationFor(thread, text: text, unreadCount: unreadCount)
         }
-        
-        let chatString = WANTS_TO_CHAT_STRING()
-        let text = "\(name) \(chatString)"
-        let unreadCount = self.applicationIconBadgeNumber + 1
-        self.showLocalNotificationFor(thread, text: text, unreadCount: unreadCount)
     }
     
     @objc public func showLocalNotificationForSubscriptionRequestFrom(_ jid:String?) {
-        var name = SOMEONE_STRING()
-        if let jidName = jid {
-            name = jidName
+        DispatchQueue.main.async {
+            var name = SOMEONE_STRING()
+            if let jidName = jid {
+                name = jidName
+            }
+            
+            let chatString = WANTS_TO_CHAT_STRING()
+            let text = "\(name) \(chatString)"
+            let unreadCount = self.applicationIconBadgeNumber + 1
+            self.showLocalNotificationWith(groupingIdentifier: nil, body: text, badge: unreadCount, userInfo: [kOTRNotificationType:kOTRNotificationTypeSubscriptionRequest], recurring: false)
         }
-        
-        let chatString = WANTS_TO_CHAT_STRING()
-        let text = "\(name) \(chatString)"
-        let unreadCount = self.applicationIconBadgeNumber + 1
-        self.showLocalNotificationWith(identifier: nil, body: text, badge: unreadCount, userInfo: [kOTRNotificationType:kOTRNotificationTypeSubscriptionRequest], recurring: false)
     }
     
     @objc public func showLocalNotificationForApprovedBuddy(_ thread:OTRThreadOwner?) {
-        var name = SOMEONE_STRING()
-        if let buddyName = (thread as? OTRBuddy)?.displayName {
-            name = buddyName
-        } else if let threadName = thread?.threadName {
-            name = threadName
+        guard let thread = thread, !thread.isMuted else { return } // No notifications for muted
+        DispatchQueue.main.async {
+            var name = SOMEONE_STRING()
+            if let buddyName = (thread as? OTRBuddy)?.displayName {
+                name = buddyName
+            } else if !thread.threadName.isEmpty {
+                name = thread.threadName
+            }
+            
+            let message = String(format: BUDDY_APPROVED_STRING(), name)
+            let unreadCount = self.applicationIconBadgeNumber + 1
+            let identifier = thread.threadIdentifier
+            let userInfo:[AnyHashable:Any] = [kOTRNotificationThreadKey:identifier,
+                                              kOTRNotificationThreadCollection:thread.threadCollection,
+                                              kOTRNotificationType: kOTRNotificationTypeApprovedBuddy]
+            self.showLocalNotificationWith(groupingIdentifier: nil, body: message, badge: unreadCount, userInfo: userInfo, recurring: false)
         }
-        
-        let message = String(format: BUDDY_APPROVED_STRING(), name)
-        
-        let unreadCount = self.applicationIconBadgeNumber + 1
-        self.showLocalNotificationFor(thread, text: message, unreadCount: unreadCount)
     }
     
     internal func showLocalNotificationFor(_ thread:OTRThreadOwner?, text:String, unreadCount:Int) {
         if let thread = thread, thread.isMuted { return } // No notifications for muted
         DispatchQueue.main.async {
-            var identifier:String? = nil
             var userInfo:[AnyHashable:Any]? = nil
             if let t = thread {
-                identifier = t.threadIdentifier
-                userInfo = [kOTRNotificationThreadKey:t.threadIdentifier, kOTRNotificationThreadCollection:t.threadCollection]
+                userInfo = [kOTRNotificationThreadKey:t.threadIdentifier,
+                            kOTRNotificationThreadCollection:t.threadCollection,
+                            kOTRNotificationType: kOTRNotificationTypeChatMessage]
             }
-            self.showLocalNotificationWith(identifier: identifier, body: text, badge: unreadCount, userInfo: userInfo, recurring: false)
+            self.showLocalNotificationWith(groupingIdentifier: nil, body: text, badge: unreadCount, userInfo: userInfo, recurring: false)
         }
     }
     
-    @objc public func showLocalNotificationWith(identifier:String?, body:String, badge:Int, userInfo:[AnyHashable:Any]?, recurring:Bool) {
+    @objc public func showLocalNotificationWith(groupingIdentifier:String?, body:String, badge:Int, userInfo:[AnyHashable:Any]?, recurring:Bool) {
         DispatchQueue.main.async {
-            if recurring, self.hasRecurringLocalNotificationWith(identifier: identifier) {
+            if recurring, self.hasRecurringLocalNotificationWith(identifier: groupingIdentifier) {
                 return // Already pending
             }
             // Use the new UserNotifications.framework on iOS 10+
@@ -134,9 +185,9 @@ public extension UIApplication {
                 let localNotification = UNMutableNotificationContent()
                 localNotification.body = body
                 localNotification.badge = NSNumber(integerLiteral: badge)
-                localNotification.sound = UNNotificationSound.default()
-                if let identifier = identifier {
-                    localNotification.threadIdentifier = identifier
+                localNotification.sound = UNNotificationSound.default
+                if let threadKey = userInfo?[kOTRNotificationThreadKey] as? String {
+                    localNotification.threadIdentifier = threadKey
                 }
                 if let userInfo = userInfo {
                     localNotification.userInfo = userInfo
@@ -148,7 +199,7 @@ public extension UIApplication {
                     date.minute = 0
                     trigger = UNCalendarNotificationTrigger(dateMatching: date, repeats: true)
                 }
-                let request = UNNotificationRequest(identifier: UUID().uuidString, content: localNotification, trigger: trigger) // Schedule the notification.
+                let request = UNNotificationRequest(identifier: groupingIdentifier ?? UUID().uuidString, content: localNotification, trigger: trigger) // Schedule the notification.
                 let center = UNUserNotificationCenter.current()
                 center.add(request, withCompletionHandler: { (error: Error?) in
                     if let error = error as NSError? {
@@ -222,5 +273,58 @@ public extension UIApplication {
             }
         }
         return found
+    }
+    
+    /// show a notification when there is an issue connecting, for instance expired certificate
+    @objc public func showConnectionErrorNotification(account: OTRXMPPAccount, error: NSError) {
+        let username = account.username
+        var body = "\(CONNECTION_ERROR_STRING()) \(username)."
+        
+        if error.domain == GCDAsyncSocketErrorDomain,
+            let code = GCDAsyncSocketError(rawValue: error.code) {
+            
+            switch code {
+            case .noError,
+                 .connectTimeoutError,
+                 .readTimeoutError,
+                 .writeTimeoutError,
+                 .readMaxedOutError,
+                 .closedError:
+                return
+            case .badConfigError, .badParamError:
+                body = body + " \(error.localizedDescription)."
+            case .otherError:
+                // this is probably a SSL error
+                body = body + " \(CONNECTION_ERROR_CERTIFICATE_VERIFY_STRING())"
+            @unknown default:
+                return
+            }
+        } else if error.domain == "kCFStreamErrorDomainSSL" {
+            body = body + " \(CONNECTION_ERROR_CERTIFICATE_VERIFY_STRING())"
+            let osStatus = OSStatus(error.code)
+            
+            // Ignore a few SSL error codes that might be more annoying than useful
+            //                errSSLClosedGraceful         = -9805,    /* connection closed gracefully */
+            //                errSSLClosedAbort             = -9806,    /* connection closed via error */
+            let codesToIgnore = [errSSLClosedAbort, errSSLClosedGraceful]
+            if codesToIgnore.contains(osStatus) {
+                return
+            }
+            
+            if let sslString = OTRXMPPError.errorString(withSSLStatus: osStatus) {
+                body = body + " \"\(sslString)\""
+            }
+        } else {
+            // unrecognized error domain... ignoring
+            return
+        }
+        
+        let accountKey = account.uniqueId
+        let badge = UIApplication.shared.applicationIconBadgeNumber + 1
+        
+        let userInfo = [kOTRNotificationType: kOTRNotificationTypeConnectionError,
+                        kOTRNotificationAccountKey: accountKey]
+        
+        self.showLocalNotificationWith(groupingIdentifier: accountKey, body: body, badge: badge, userInfo: userInfo, recurring: false)
     }
 }

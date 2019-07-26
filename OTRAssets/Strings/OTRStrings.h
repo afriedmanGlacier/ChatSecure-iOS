@@ -18,10 +18,16 @@ FOUNDATION_EXPORT NSString* ACTIVE_STRING();
 FOUNDATION_EXPORT NSString* ADD_BUDDY_STRING();
 /** "Add Existing Account", Label for button to create account by logging into an existing account */
 FOUNDATION_EXPORT NSString* ADD_EXISTING_STRING();
+/** "Is %@ your friend? Add him/her to auto-download pictures in the future.", Shown in chat view to prompt user to add friend for auto-download of group media messages. */
+FOUNDATION_EXPORT NSString* ADD_FRIEND_TO_AUTO_DOWNLOAD();
 /** "Add", Button title to add someone as a buddy */
 FOUNDATION_EXPORT NSString* ADD_STRING();
 /** "Advanced", String to describe advanced set of settings */
 FOUNDATION_EXPORT NSString* ADVANCED_STRING();
+/** "Restore iTunes backups to new devices", Description for allowing DB passphrase backup */
+FOUNDATION_EXPORT NSString* ALLOW_DB_PASSPHRASE_BACKUP_DESCRIPTION_STRING();
+/** "Allow Device Migration", Title for allowing DB passphrase backup */
+FOUNDATION_EXPORT NSString* ALLOW_DB_PASSPHRASE_BACKUP_TITLE_STRING();
 /** "Archive", Verb. action for archiving an old conversation */
 FOUNDATION_EXPORT NSString* ARCHIVE_ACTION_STRING();
 /** "Archive", Noun. segmented control value for displaying archived conversations */
@@ -76,6 +82,10 @@ FOUNDATION_EXPORT NSString* CONNECTED_STRING();
 FOUNDATION_EXPORT NSString* CONNECTING_STRING();
 /** "Connecting to Tor", Message shown when connecting to the Tor network */
 FOUNDATION_EXPORT NSString* CONNECTING_TO_TOR_STRING();
+/** "Please re-verify the server's certificate.", alert title for connection errors */
+FOUNDATION_EXPORT NSString* CONNECTION_ERROR_CERTIFICATE_VERIFY_STRING();
+/** "There was an error connecting to account", alert title for connection errors */
+FOUNDATION_EXPORT NSString* CONNECTION_ERROR_STRING();
 /** "Connect", String for button to connect connect */
 FOUNDATION_EXPORT NSString* CONNECT_STRING();
 /** "Copy Link", Copy link URL to clipboard as in copy and paste */
@@ -138,6 +148,10 @@ FOUNDATION_EXPORT NSString* Database_Error_String();
 FOUNDATION_EXPORT NSString* EDIT_ACCOUNT_STRING();
 /** "Email", The string describing account name or email address for a buddy */
 FOUNDATION_EXPORT NSString* EMAIL_STRING();
+/** "Beware! These logs are for debugging purposes only and will contain sensitive material like usernames, passwords, contacts, and message history. Disabling this option will delete all existing logs.", extra information about debug logging */
+FOUNDATION_EXPORT NSString* ENABLE_DEBUG_LOGGING_HELP_STRING();
+/** "Enable Debug Logging", switch label for toggling debug logs */
+FOUNDATION_EXPORT NSString* ENABLE_DEBUG_LOGGING_STRING();
 /** "Enable Push in Settings", button for enabling push messages in iOS system settings */
 FOUNDATION_EXPORT NSString* ENABLE_PUSH_IN_SETTINGS_STRING();
 /** "Enable Push", button for enabling push messages */
@@ -150,6 +164,8 @@ FOUNDATION_EXPORT NSString* ENTER_GROUP_NAME_STRING();
 FOUNDATION_EXPORT NSString* ERROR_CREATING_ACCOUNT_STRING();
 /** "Error", Title of error message pop-up box */
 FOUNDATION_EXPORT NSString* ERROR_STRING();
+/** "Experimental", Section for experimental settings */
+FOUNDATION_EXPORT NSString* EXPERIMENTAL_STRING();
 /** "Extended Away", Default message when a user status is set to extended away */
 FOUNDATION_EXPORT NSString* EXTENDED_AWAY_STRING();
 /** "Enable", enable permission */
@@ -178,10 +194,14 @@ FOUNDATION_EXPORT NSString* GITHUB_STRING();
 FOUNDATION_EXPORT NSString* GOOGLE_TALK_STRING();
 /** "Group Chat", a subtitle label for a group chat */
 FOUNDATION_EXPORT NSString* GROUP_CHAT_STRING();
+/** "Make Admin", Label for granting admin privileges to someone in a group */
+FOUNDATION_EXPORT NSString* GROUP_GRANT_ADMIN_STRING();
 /** "you", This will be shown after your own JID in the group profile view */
 FOUNDATION_EXPORT NSString* GROUP_INFO_YOU();
 /** "Group Name", The title for the view to enter a group chat name or label */
 FOUNDATION_EXPORT NSString* GROUP_NAME_STRING();
+/** "Kick Out", Label for revoking membership for someone in a group */
+FOUNDATION_EXPORT NSString* GROUP_REVOKE_MEMBERSHIP_STRING();
 /** "Generate Secure Password", whether or not we should generate a strong password for them */
 FOUNDATION_EXPORT NSString* Generate_Secure_Password();
 /** "We can automatically generate you a secure password. If you choose your own, make sure it's a unique password you don't use anywhere else.", help text for password generator */
@@ -226,6 +246,8 @@ FOUNDATION_EXPORT NSString* LOGIN_STRING();
 FOUNDATION_EXPORT NSString* LOGOUT_STRING();
 /** "Manage ChatSecure Push account", Title for button to manage ChatSecure Push account */
 FOUNDATION_EXPORT NSString* MANAGE_CHATSECURE_PUSH_ACCOUNT_STRING();
+/** "Manage Debug Logs", Manage the device logs */
+FOUNDATION_EXPORT NSString* MANAGE_DEBUG_LOGS_STRING();
 /** "Manage My Keys", Button to manage your OTR and OMEMO keys */
 FOUNDATION_EXPORT NSString* MANAGE_MY_KEYS();
 /** "Maybe Later", button to do something later */
@@ -282,6 +304,8 @@ FOUNDATION_EXPORT NSString* NEW_MESSAGE_STRING();
 FOUNDATION_EXPORT NSString* NEW_STRING();
 /** "Next", Label for button to go to next step */
 FOUNDATION_EXPORT NSString* NEXT_STRING();
+/** "Notifications", Label for notifications switch */
+FOUNDATION_EXPORT NSString* NOTIFICATIONS_STRING();
 /** "We could not find any trusted devices for this account.", Error message for not finding any devices */
 FOUNDATION_EXPORT NSString* NO_DEVICES_ACCOUNT_ERROR_STRING();
 /** "We could not find any trusted devices for this contact.", Error message for not finding any devices */
@@ -296,6 +320,10 @@ FOUNDATION_EXPORT NSString* OFFLINE_STRING();
 FOUNDATION_EXPORT NSString* OK_STRING();
 /** "Old", For an old settings value */
 FOUNDATION_EXPORT NSString* OLD_STRING();
+/** "Note: this does not automatically enable group encryption. It must also be manually enabled on a per-group basis.", toggling switch detail for showing OMEMO group encryption */
+FOUNDATION_EXPORT NSString* OMEMO_GROUP_ENCRYPTION_DETAIL_STRING();
+/** "OMEMO Group Encryption", For an old settings value */
+FOUNDATION_EXPORT NSString* OMEMO_GROUP_ENCRYPTION_STRING();
 /** "You're ready to use", String used when onboarding works */
 FOUNDATION_EXPORT NSString* ONBOARDING_SUCCESS_STRING();
 /** "Open in Chrome", Label to open link in the chrome web browser */
@@ -434,6 +462,8 @@ FOUNDATION_EXPORT NSString* SETTINGS_STRING();
 FOUNDATION_EXPORT NSString* SHARE_MESSAGE_STRING();
 /** "Share", Title for sharing a link to the app */
 FOUNDATION_EXPORT NSString* SHARE_STRING();
+/** "Show Console", button label for showing log console */
+FOUNDATION_EXPORT NSString* SHOW_CONSOLE_STRING();
 /** "Would you like to connect to UserVoice to send feedback?", actionsheet for showing uservoice feedback service */
 FOUNDATION_EXPORT NSString* SHOW_USERVOICE_STRING();
 /** "Sign Up", title label for signing up for a new account */
@@ -478,6 +508,8 @@ FOUNDATION_EXPORT NSString* UNTRUSTED_DEVICE_SENT_STRING();
 FOUNDATION_EXPORT NSString* UNTRUSTED_DEVICE_STRING();
 /** "Username", Label text for username field on login screen */
 FOUNDATION_EXPORT NSString* USERNAME_STRING();
+/** "Canceled", Describes a state entered by user cancelation */
+FOUNDATION_EXPORT NSString* USER_CANCELED_STRING();
 /** "Camera", Label for button to take a photo from camera */
 FOUNDATION_EXPORT NSString* USE_CAMERA_STRING();
 /** "Unrecognized Invite Format", shown when invite QR code doesnt work */
@@ -508,6 +540,8 @@ FOUNDATION_EXPORT NSString* XMPP_FAIL_STRING();
 FOUNDATION_EXPORT NSString* XMPP_TOR_STRING();
 /** "user@example.com", Example of a username using the words user and example */
 FOUNDATION_EXPORT NSString* XMPP_USERNAME_EXAMPLE_STRING();
+/** "You have been invited to the ´%@´ group.", Title of screen for joining/not joining group */
+FOUNDATION_EXPORT NSString* YOU_HAVE_BEEN_INVITED_TO_GROUP_STRING();
 /** "Bad certificate format", SSL error message */
 FOUNDATION_EXPORT NSString* errSSLBadCertString();
 /** "Bad SSLCipherSuite", SSL error message */

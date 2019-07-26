@@ -9,7 +9,43 @@
 import Foundation
 import YapDatabase
 
-public extension YapDatabase {
+@objc public extension OTRDatabaseManager {
+    @objc var connections: DatabaseConnections? {
+        guard let ui = uiConnection,
+        let read = readConnection,
+        let write = writeConnection,
+            let long = longLivedReadOnlyConnection else {
+                return nil
+        }
+        return DatabaseConnections(ui: ui, read: read, write: write, longLivedRead: long)
+    }
+}
+
+/// This class holds shared references to commonly-needed Yap database connections
+@objcMembers
+public class DatabaseConnections: NSObject {
+    
+    /// User interface / synchronous main-thread reads only!
+    public let ui: YapDatabaseConnection
+    /// Background / async reads only! Not for use in main thread / UI code.
+    public let read: YapDatabaseConnection
+    /// Background writes only! Never use this synchronously from the main thread!
+    public let write: YapDatabaseConnection
+    /// This is only to be used by the YapViewHandler for main thread reads only!
+    public let longLivedRead: YapDatabaseConnection
+    
+    init(ui: YapDatabaseConnection,
+    read: YapDatabaseConnection,
+    write: YapDatabaseConnection,
+    longLivedRead: YapDatabaseConnection) {
+        self.ui = ui
+        self.read = read
+        self.write = write
+        self.longLivedRead = longLivedRead
+    }
+}
+
+extension YapDatabase {
     
      @objc func asyncRegisterView(_ grouping:YapDatabaseViewGrouping, sorting:YapDatabaseViewSorting, version:String, whiteList:Set<String>, name:DatabaseExtensionName, completionQueue:DispatchQueue?, completionBlock:((Bool) ->Void)?) {
         
@@ -31,12 +67,23 @@ public extension YapDatabase {
     
     @objc public func asyncRegisterGroupOccupantsView(_ completionQueue:DispatchQueue?, completionBlock:((Bool) ->Void)?) {
         
-        let grouping = YapDatabaseViewGrouping.withObjectBlock { (readTransaction, collection , key , object ) -> String! in
+        let grouping = YapDatabaseViewGrouping.withObjectBlock { (readTransaction, collection , key , object ) -> String? in
             guard let occupant = object as? OTRXMPPRoomOccupant else {
                 return nil
             }
             
             guard let roomId = occupant.roomUniqueId else {
+                return nil
+            }
+            
+            // Filter out occupants not associated with any JIDs
+            if occupant.jid == nil,
+                occupant.realJID == nil {
+                return nil
+            }
+            
+            // Filter out outcasts and occupants that have affilition none and role none (which in private rooms means not a member and in public rooms means not currently in the room
+            if occupant.affiliation == .outcast || (occupant.affiliation == .none && occupant.role == .none) {
                 return nil
             }
             
@@ -58,17 +105,17 @@ public extension YapDatabase {
                 }
             }
             
-            guard let name1 = (object1 as? OTRXMPPRoomOccupant)?.roomName ?? (object1 as? OTRXMPPRoomOccupant)?.realJID ?? (object1 as? OTRXMPPRoomOccupant)?.jid else {
+            guard let name1 = (object1 as? OTRXMPPRoomOccupant)?.roomName ?? (object1 as? OTRXMPPRoomOccupant)?.realJID?.full ?? (object1 as? OTRXMPPRoomOccupant)?.jid?.full else {
                 return .orderedSame
             }
             
-            guard let name2 = (object2 as? OTRXMPPRoomOccupant)?.roomName ?? (object2 as? OTRXMPPRoomOccupant)?.realJID ?? (object2 as? OTRXMPPRoomOccupant)?.jid else {
+            guard let name2 = (object2 as? OTRXMPPRoomOccupant)?.roomName ?? (object2 as? OTRXMPPRoomOccupant)?.realJID?.full ?? (object2 as? OTRXMPPRoomOccupant)?.jid?.full else {
                 return .orderedSame
             }
             
             return name1.localizedCompare(name2)
         }
         
-        self.asyncRegisterView(grouping, sorting: sorting, version: "1", whiteList: [OTRXMPPRoomOccupant.collection], name: .groupOccupantsViewName, completionQueue: completionQueue, completionBlock: completionBlock)
+        self.asyncRegisterView(grouping, sorting: sorting, version: "10", whiteList: [OTRXMPPRoomOccupant.collection], name: .groupOccupantsViewName, completionQueue: completionQueue, completionBlock: completionBlock)
     }
 }

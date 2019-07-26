@@ -17,12 +17,15 @@ open class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDeleg
         self.databaseConnection = databaseConnection
     }
     
+    
+    
     open func enterConversationWithBuddies(_ buddyKeys:[String], accountKey:String, name:String?) {
         guard let splitVC = self.splitViewController else {
             return
         }
         
-        if let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate, let messagesVC = appDelegate.theme.messagesViewController() as? OTRMessagesViewController {
+        if let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate {
+            let messagesVC = appDelegate.messagesViewController
             messagesVC.setup(withBuddies: buddyKeys, accountId: accountKey, name:name)
             //setup 'back' button in nav bar
             let navigationController = UINavigationController(rootViewController: messagesVC)
@@ -54,7 +57,7 @@ open class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDeleg
             return
         }
         
-        OTRProtocolManager.sharedInstance().encryptionManager.maybeRefreshOTRSession(forBuddyKey: threadOwner.threadIdentifier, collection: threadOwner.threadCollection)
+        OTRProtocolManager.encryptionManager.maybeRefreshOTRSession(forBuddyKey: threadOwner.threadIdentifier, collection: threadOwner.threadCollection)
         
         //Set nav controller root view controller to mVC and then show detail with nav controller
         
@@ -74,10 +77,7 @@ open class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDeleg
     }
     
     public func conversationViewController(_ conversationViewController: OTRConversationViewController!, didSelectCompose sender: Any!) {
-        guard let appDelegate = UIApplication.shared.delegate as? OTRAppDelegate else {
-            return
-        }
-        let composeViewController = appDelegate.theme.composeViewController()
+        let composeViewController = GlobalTheme.shared.composeViewController()
         if let composeViewController = composeViewController as? OTRComposeViewController {
             composeViewController.delegate = self
         }
@@ -122,6 +122,18 @@ open class OTRSplitViewCoordinator: NSObject, OTRConversationViewControllerDeleg
         if self.splitViewController?.presentedViewController != nil {
             self.splitViewController?.dismiss(animated: true, completion: nil)
         }
+    }
+    
+    @objc open func showAccountDetails(account: OTRXMPPAccount, completion: (()->Void)?) {
+        guard splitViewController?.presentedViewController == nil else {
+            return
+        }
+        
+        let detailVC = GlobalTheme.shared.accountDetailViewController(account: account)
+        
+        let nav = UINavigationController(rootViewController: detailVC)
+        nav.modalPresentationStyle = .formSheet
+        splitViewController?.present(nav, animated: true, completion: completion)
     }
 }
 

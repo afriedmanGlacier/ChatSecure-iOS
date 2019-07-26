@@ -8,39 +8,34 @@
 
 #import "OTRXMPPManager.h"
 #import "OTRCertificatePinning.h"
-#import "OTRXMPPMessageYapStorage.h"
 #import "OTRXMPPBuddyManager.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
-#import "OTRYapDatabaseRosterStorage.h"
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRXMPPRoomManager.h"
 #import "OTRXMPPBuddyTimers.h"
-#import "OTRXMPPStream.h"
+@import XMPPFramework;
 
 NS_ASSUME_NONNULL_BEGIN
 @interface OTRXMPPManager() <OTRCertificatePinningDelegate>
 
-@property (nonatomic, strong, readonly) OTRXMPPStream *xmppStream;
+@property (nonatomic, strong, readonly) XMPPStream *xmppStream;
 @property (nonatomic, strong, readonly) XMPPReconnect *xmppReconnect;
 @property (nonatomic, strong, readonly) XMPPvCardTempModule *xmppvCardTempModule;
 @property (nonatomic, strong, readonly) XMPPvCardAvatarModule *xmppvCardAvatarModule;
-@property (nonatomic, strong, readonly) XMPPCapabilitiesCoreDataStorage *xmppCapabilitiesStorage;
-@property (nonatomic, strong, readonly) OTRYapDatabaseRosterStorage * xmppRosterStorage;
+@property (nonatomic, strong, readonly) RosterStorage * xmppRosterStorage;
 @property (nonatomic, strong) OTRCertificatePinning * certificatePinningModule;
 
 @property (nonatomic, strong, readonly) XMPPStreamManagement *streamManagement;
-@property (nonatomic, strong, readonly) XMPPMessageCarbons *messageCarbons;
-@property (nonatomic, strong, readonly) OTRXMPPMessageYapStorage *messageStorage;
 
 @property (nonatomic, strong, readonly) OTRXMPPBuddyManager* xmppBuddyManager;
 @property (nonatomic, strong, readonly) OMEMOModule *omemoModule;
 @property (nonatomic, strong, nullable) OTRXMPPChangePasswordManager *changePasswordManager;
 
-@property (nonatomic, strong, readonly) YapDatabaseConnection *databaseConnection;
 @property (nonatomic, strong, readonly) XMPPMessageDeliveryReceipts *deliveryReceipts;
 @property (nonatomic, strong, readonly) OTRXMPPMessageStatusModule *messageStatusModule;
 @property (nonatomic, strong, readonly) OTRStreamManagementDelegate *streamManagementDelegate;
 @property (nonatomic, strong, readonly) XMPPStanzaIdModule *stanzaIdModule;
-
+/// This is a readwrite connection
+@property (nonatomic, strong, readonly) YapDatabaseConnection *databaseConnection;
 
 @property (nonatomic, strong, readonly) dispatch_queue_t workQueue;
 @property (nonatomic, strong, readonly) NSMutableDictionary<NSString*,OTRXMPPBuddyTimers*> * buddyTimers;
@@ -49,8 +44,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readwrite) BOOL isRegisteringNewAccount;
 @property (nonatomic, readwrite) BOOL userInitiatedConnection;
-@property (nonatomic, readwrite) OTRLoginStatus loginStatus;
-@property (nonatomic, readwrite) OTRProtocolConnectionStatus connectionStatus;
+@property (atomic, readwrite) OTRLoginStatus loginStatus;
 
 - (void)setupStream;
 - (void)teardownStream;
@@ -62,8 +56,8 @@ NS_ASSUME_NONNULL_BEGIN
 /** wtf. why isn't this being picked up by OTRProtocol */
 - (void) connectUserInitiated:(BOOL)userInitiated;
 
-/** Return a newly allocated stream object. This is overridden in OTRXMPPTorManager to use ProxyXMPPStream instead of OTRXMPPStream */
-- (OTRXMPPStream*) newStream;
+/** Return a newly allocated stream object. This is overridden in OTRXMPPTorManager to use ProxyXMPPStream instead of XMPPStream */
+- (XMPPStream*) newStream;
 
 @end
 NS_ASSUME_NONNULL_END

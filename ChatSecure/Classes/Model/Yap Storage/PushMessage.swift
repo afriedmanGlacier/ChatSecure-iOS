@@ -22,6 +22,8 @@ import Foundation
     /// the date the push was sent, used for sorting
     @objc open var pushDate:Date = Date()
     
+    @objc open var messageSecurityInfo: OTRMessageEncryptionInfo? = nil
+    
     ///Send it to the same collection of other messages
     open class override var collection: String {
         return OTRBaseMessage.collection
@@ -30,6 +32,11 @@ import Foundation
 }
 
 extension PushMessage: OTRMessageProtocol {
+    
+    public func buddy(with transaction: YapDatabaseReadTransaction) -> OTRXMPPBuddy? {
+        return nil
+    }
+    
     public func duplicateMessage() -> OTRMessageProtocol {
         return PushMessage()
     }
@@ -152,7 +159,7 @@ extension PushMessage: YapDatabaseRelationshipNode {
 extension PushMessage {
     func account() -> OTRAccount? {
         var account:OTRAccount? = nil
-        OTRDatabaseManager.sharedInstance().readOnlyDatabaseConnection?.read { (transaction) -> Void in
+        OTRDatabaseManager.sharedInstance().uiConnection?.read { (transaction) -> Void in
             if let buddyKey = self.buddyKey {
                 if let buddy = OTRBuddy.fetchObject(withUniqueID: buddyKey, transaction: transaction) {
                     account = buddy.account(with: transaction)

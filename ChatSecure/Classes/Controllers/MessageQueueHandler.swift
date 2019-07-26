@@ -22,11 +22,8 @@ private class OutstandingActionInfo: Hashable, Equatable {
         self.completion = completion
     }
     
-    /// Needed so we can store the struct in a dictionary
-    var hashValue: Int {
-        get {
-            return action.yapKey().hashValue
-        }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(action.yapKey())
     }
 }
 
@@ -45,10 +42,9 @@ private struct OutstandingMessageInfo {
 
 /// Needed so we can store the struct in a dictionary
 extension OutstandingMessageInfo: Hashable {
-    var hashValue: Int {
-        get {
-            return "\(self.messageKey)\(self.messageCollection)".hashValue
-        }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(self.messageKey)
+        hasher.combine(self.messageCollection)
     }
 }
 
@@ -211,7 +207,7 @@ public class MessageQueueHandler:NSObject {
     fileprivate func sendDirectMessage(_ message: OTROutgoingMessage,
                                        buddy: OTRXMPPBuddy,
                                        account: OTRAccount,
-                                       accountProtocol: OTRXMPPManager,
+                                       accountProtocol: XMPPManager,
                                        messageSendingAction:OTRYapMessageSendAction,
                                        completion:@escaping (_ success: Bool, _ retryTimeout: TimeInterval) -> Void) {
         switch message.messageSecurity {
@@ -231,13 +227,15 @@ public class MessageQueueHandler:NSObject {
         case .invalid:
             fatalError("Invalid message security. This should never happen... so let's crash!")
             break
+        @unknown default:
+            fatalError("Invalid message security. This should never happen... so let's crash!")
         }
     }
     
     fileprivate func sendGroupMessage(_ message: OTRXMPPRoomMessage,
                                       thread: OTRThreadOwner,
                                       account: OTRAccount,
-                                      accountProtocol: OTRXMPPManager,
+                                      accountProtocol: XMPPManager,
                                       messageSendingAction:OTRYapMessageSendAction,
                                       completion:@escaping (_ success: Bool, _ retryTimeout: TimeInterval) -> Void) {
         let roomManager = accountProtocol.roomManager
@@ -250,14 +248,24 @@ public class MessageQueueHandler:NSObject {
             return
         }
         self.waitingForMessage(message.uniqueId, messageCollection: message.messageCollection, messageSecurity:message.messageSecurity, completion: completion)
-        room.send(message)
+        switch message.messageSecurity {
+        case .invalid, .plaintextWithOTR, .OTR:
+            assertionFailure("Invalid group message security. This should never happen.")
+            DDLogError("Invalid group message security. This should never happen.")
+            return
+        case .plaintext:
+            room.sendRoomMessage(message)
+        case .OMEMO:
+            sendOMEMOMessage(message: message, accountProtocol: accountProtocol, completion: completion)
+        @unknown default:
+            fatalError("Invalid group message security. This should never happen.")
+        }
         databaseConnection.readWrite { transaction in
-            if let sentMessage = message.refetch(with: transaction) {
+            if let sentMessage = message.refetch(with: transaction)?.copyAsSelf() {
                 sentMessage.state = .pendingSent
                 sentMessage.save(with: transaction)
             }
         }
-        completion(true, 0.0)
     }
     
     fileprivate func sendMessage(_ messageSendingAction:OTRYapMessageSendAction, completion:@escaping (_ success: Bool, _ retryTimeout: TimeInterval) -> Void) {
@@ -288,7 +296,7 @@ public class MessageQueueHandler:NSObject {
         }
         
         //Get the XMPP procol manager associated with this message and therefore account
-        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? OTRXMPPManager else {
+        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? XMPPManager else {
             completion(true, 0.0)
             return
         }
@@ -301,7 +309,7 @@ public class MessageQueueHandler:NSObject {
         //Some way to store a message dictionary with the key and block
         
         //Ensure protocol is connected or if not and autologin then connnect
-        if (accountProtocol.connectionStatus == .connected) {
+        if (accountProtocol.loginStatus == .authenticated) {
             if let groupMessage = message as? OTRXMPPRoomMessage {
                 sendGroupMessage(groupMessage, thread: thread, account: account, accountProtocol: accountProtocol, messageSendingAction: messageSendingAction, completion: completion)
             } else if let directMessage = message as? OTROutgoingMessage, let buddy = thread as? OTRXMPPBuddy {
@@ -342,13 +350,13 @@ public class MessageQueueHandler:NSObject {
         }
         
         //Get the XMPP procol manager associated with this message and therefore account
-        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? OTRXMPPManager else {
+        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? XMPPManager else {
             completion(true, 0.0)
             return
         }
 
         //Ensure protocol is connected or if not and autologin then connnect
-        if (accountProtocol.connectionStatus == .connected) {
+        if (accountProtocol.loginStatus == .authenticated) {
             // Add the buddy to our roster
             if let jid = XMPPJID(string: buddy.username) {
                 accountProtocol.xmppRoster.addUser(jid, withNickname:buddy.displayName)
@@ -377,13 +385,13 @@ public class MessageQueueHandler:NSObject {
         }
         
         //Get the XMPP procol manager associated with this message and therefore account
-        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? OTRXMPPManager else {
+        guard let accountProtocol = OTRProtocolManager.sharedInstance().protocol(for: account) as? XMPPManager else {
             completion(true, 0.0)
             return
         }
         
         //Ensure protocol is connected or if not and autologin then connnect
-        if accountProtocol.connectionStatus == .connected,
+        if accountProtocol.loginStatus == .authenticated,
             let jidStr = removeBuddyAction.buddyJid {
             // Add the buddy to our roster
             if let jid = XMPPJID(string: jidStr) {
@@ -412,15 +420,15 @@ public class MessageQueueHandler:NSObject {
     }
     
     fileprivate func didConnectAccount(_ accountKey:String, accountCollection:String) {
-        
         guard let actionSet = self.popWaitingAccount(accountKey) else {
             return
         }
-        
-        for actionInfo in actionSet {
+        if let actionInfo = actionSet.first {
             self.operationQueue.addOperation { [weak self] in
                 guard let strongSelf = self else { return }
-                strongSelf.handleNextItem(actionInfo.action, completion: actionInfo.completion)
+                DispatchQueue.global().async {
+                    strongSelf.handleNextItem(actionInfo.action, completion: actionInfo.completion)
+                }
             }
         }
     }
@@ -482,18 +490,23 @@ public class MessageQueueHandler:NSObject {
 extension MessageQueueHandler: OTRXMPPMessageStatusModuleDelegate {
     
     public func didSendMessage(_ messageKey: String, messageCollection: String) {
-        
         guard let messageInfo = self.popWaitingMessage(messageKey, messageCollection: messageCollection) else {
             return;
         }
         
         //Update date sent
-        self.databaseConnection.asyncReadWrite { (transaction) in
-            guard let object = transaction.object(forKey: messageKey, inCollection: messageCollection) as? NSCopying, let message = object.copy() as? OTROutgoingMessage else {
+        self.databaseConnection.readWrite { (transaction) in
+            guard let object = transaction.object(forKey: messageKey, inCollection: messageCollection) as? NSCopying else {
                 return
             }
-            message.dateSent = Date()
-            message.save(with: transaction)
+            let copy = object.copy()
+            if let message = copy as? OTROutgoingMessage {
+                message.dateSent = Date()
+                message.save(with: transaction)
+            } else if let message = copy as? OTRXMPPRoomMessage {
+                message.state = .sent
+                message.save(with: transaction)
+            }
         }
         
         messageInfo.completion(true, 0.0)
@@ -539,7 +552,7 @@ extension MessageQueueHandler {
             return
         }
         //We're connected now we need to check encryption requirements
-        let otrKit = OTRProtocolManager.sharedInstance().encryptionManager.otrKit
+        let otrKit = OTRProtocolManager.encryptionManager.otrKit
         let otrKitSend = {
             self.waitingForMessage(message.uniqueId, messageCollection: OTROutgoingMessage.collection, messageSecurity:message.messageSecurity, completion: completion)
             otrKit.encodeMessage(text, tlvs: nil, username:buddyUsername , accountName: accountUsername, protocol: accountProtocolStrintg, tag: message)
@@ -560,18 +573,17 @@ extension MessageQueueHandler {
         }
     }
     
-    func sendOMEMOMessage(message:OTROutgoingMessage, accountProtocol:OTRXMPPManager,completion:@escaping MessageQueueHandlerCompletion) {
-        guard let text = message.text, text.characters.count > 0 else {
+    func sendOMEMOMessage(message:OTRMessageProtocol, accountProtocol:XMPPManager,completion:@escaping MessageQueueHandlerCompletion) {
+        guard let text = message.messageText, text.count > 0 else {
             completion(true, 0.0)
             return
         }
-        
         guard let signalCoordinator = accountProtocol.omemoSignalCoordinator else {
             self.databaseConnection.asyncReadWrite({ (transaction) in
-                guard let message = OTROutgoingMessage.fetchObject(withUniqueID: message.uniqueId, transaction: transaction)?.copy() as? OTROutgoingMessage else {
+                guard let message = message.refetch(with: transaction)?.copyAsSelf() else {
                     return
                 }
-                message.error = NSError.chatSecureError(EncryptionError.omemoNotSuported, userInfo: nil)
+                message.messageError = NSError.chatSecureError(EncryptionError.omemoNotSuported, userInfo: nil)
                 message.save(with: transaction)
             })
             completion(true, 0.0)
@@ -579,25 +591,18 @@ extension MessageQueueHandler {
         }
         self.waitingForMessage(message.uniqueId, messageCollection: OTROutgoingMessage.collection, messageSecurity:message.messageSecurity, completion: completion)
         
-        
-        
-        signalCoordinator.encryptAndSendMessage(message, buddyYapKey: message.buddyUniqueId, messageId: message.messageId, completion: { [weak self] (success, error) in
-            guard let strongSelf = self else {
-                return
-            }
-            
+        signalCoordinator.encryptAndSendMessage(message, completion: { (success, error) in
             if (success == false) {
                 //Something went wrong getting ready to send the message
                 //Save error object to message
-                strongSelf.databaseConnection.readWrite({ (transaction) in
-                    guard let message = message.refetch(with: transaction) else {
+                self.databaseConnection.readWrite({ (transaction) in
+                    guard let message = message.refetch(with: transaction)?.copyAsSelf() else {
                         return
                     }
-                    message.error = error
+                    message.messageError = error
                     message.save(with: transaction)
                 })
-                
-                if let messageInfo = strongSelf.popWaitingMessage(message.uniqueId, messageCollection: type(of: message).collection) {
+                if let messageInfo = self.popWaitingMessage(message.uniqueId, messageCollection: type(of: message).collection) {
                     //Even though we were not succesfull in sending a message. The action needs to be removed from the queue so the next message can be handled.
                     messageInfo.completion(true, 0.0)
                 }

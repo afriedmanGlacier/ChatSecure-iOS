@@ -71,10 +71,16 @@ class PushStorage: NSObject, PushStorageProtocol {
         self.databaseConnection = databaseConnection
     }
     
+    func thisDevicePushAccount(transaction: YapDatabaseReadTransaction) -> Account? {
+        var account:Account? = nil
+        account = transaction.object(forKey: PushYapKeys.thisAccountKey.rawValue, inCollection: Account.yapCollection()) as? Account
+        return account
+    }
+    
     func thisDevicePushAccount() -> Account? {
         var account:Account? = nil
         self.databaseConnection.read { (transaction) -> Void in
-            account = transaction.object(forKey: PushYapKeys.thisAccountKey.rawValue, inCollection: Account.yapCollection()) as? Account
+            account = self.thisDevicePushAccount(transaction: transaction)
         }
         return account
     }
@@ -290,7 +296,8 @@ class PushStorage: NSObject, PushStorageProtocol {
     func buddy(_ username: String, accountName: String) -> OTRBuddy? {
         var buddy:OTRBuddy? = nil
         self.databaseConnection.read { (transaction) -> Void in
-            buddy = OTRBuddy.fetch(forUsername: username, accountName: accountName, transaction: transaction)
+            guard let jid = XMPPJID(string: username), let account = OTRAccount.allAccounts(withUsername: accountName, transaction: transaction).first else { return }
+            buddy = OTRXMPPBuddy.fetchBuddy(jid: jid, accountUniqueId: account.uniqueId, transaction: transaction)
         }
         return buddy
     }

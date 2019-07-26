@@ -74,7 +74,7 @@
 
 +(void)deleteAllBuddiesAndMessages
 {
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].writeConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         [transaction removeAllObjectsInCollection:[OTRBuddy collection]];
         [transaction removeAllObjectsInCollection:[OTRBaseMessage collection]];
     }];
@@ -82,7 +82,7 @@
 
 + (void)deleteAccountsWithoutUsername
 {
-    [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
+    [[OTRDatabaseManager sharedInstance].writeConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
         NSMutableArray *deleteKeys = [NSMutableArray array];
         [transaction enumerateKeysAndObjectsInCollection:[OTRAccount collection] usingBlock:^(NSString *key, OTRAccount *account, BOOL *stop) {
             if (![account.username length]) {
@@ -131,21 +131,13 @@
     status = SSLGetSupportedCiphers(sslContext, ciphers, &numCiphers);
     DDLogVerbose(@"SSLGetSupportedCiphers result %d",(int)status);
     
-    
-    //NSMutableArray * discardedCiphers = [NSMutableArray array];
     for (int index = 0; index < numCiphers; index++) {
         if ([self useCipher:ciphers[index]]) {
             NSNumber * cipher = [NSNumber numberWithUnsignedShort: ciphers[index]];
             [cipherSuitesArray addObject:cipher];
-        }/**
-          * Used to detect discarded ciphers
-        else {
-            
-            NSNumber * cipher = [NSNumber numberWithUnsignedShort: ciphers[index]];
-            DDLogVerbose(@"Hex value is 0x%02x", (unsigned int) ciphers[index]);
-            [discardedCiphers addObject:cipher];
-        }*/
+        }
     }
+    CFRelease(sslContext);
     
     return cipherSuitesArray;
 }

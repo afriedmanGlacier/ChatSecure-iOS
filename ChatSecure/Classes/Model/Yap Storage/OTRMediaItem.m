@@ -18,7 +18,7 @@
 @import MobileCoreServices;
 @import OTRAssets;
 #import "OTRDatabaseManager.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 
 static NSString* GetExtensionForMimeType(NSString* mimeType) {
     NSCParameterAssert(mimeType.length > 0);
@@ -109,9 +109,11 @@ static NSString* GetExtensionForMimeType(NSString* mimeType) {
     } else {
         mediaClass = [OTRFileItem class];
     }
-    
     if (mediaClass) {
         mediaItem = [[mediaClass alloc] initWithFilename:filename mimeType:mimeType isIncoming:YES];
+    } else {
+        // satisfying the static analyzer
+        mediaItem = [[OTRFileItem alloc] initWithFilename:filename mimeType:mimeType isIncoming:YES];
     }
     return mediaItem;
 }
@@ -242,7 +244,7 @@ static NSString* GetExtensionForMimeType(NSString* mimeType) {
         // this code is used to fetch the image from the data store and then cache in ram
         __block id<OTRThreadOwner> thread = nil;
         __block id<OTRMessageProtocol> message = nil;
-        [OTRDatabaseManager.shared.readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+        [OTRDatabaseManager.shared.readConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
             message = [self parentMessageWithTransaction:transaction];
             thread = [message threadOwnerWithTransaction:transaction];
         }];
@@ -258,7 +260,7 @@ static NSString* GetExtensionForMimeType(NSString* mimeType) {
             DDLogError(@"Could not handle display for media item %@", self);
         } else {
             // Success, touch parent message to display it.
-            [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
+            [[OTRDatabaseManager sharedInstance].writeConnection asyncReadWriteWithBlock:^(YapDatabaseReadWriteTransaction * _Nonnull transaction) {
                 [self touchParentMessageWithTransaction:transaction];
             }];
         }
@@ -275,7 +277,7 @@ static NSString* GetExtensionForMimeType(NSString* mimeType) {
 /** ⚠️ Do not call from within an existing database transaction */
 - (nullable id<OTRDownloadMessage>) downloadMessage {
     __block id<OTRMessageProtocol> message = nil;
-    [OTRDatabaseManager.shared.readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [OTRDatabaseManager.shared.uiConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         message = [self parentMessageWithTransaction:transaction];
     }];
     if ([message conformsToProtocol:@protocol(OTRDownloadMessage)]) {
@@ -329,7 +331,29 @@ static NSString* GetExtensionForMimeType(NSString* mimeType) {
 
 - (id)yapDatabaseRelationshipEdgeDeleted:(YapDatabaseRelationshipEdge *)edge withReason:(YDB_NotifyReason)reason
 {
-    //TODO:Delete File because the parent OTRMessage was deleted
+    //#865 Delete File because the parent OTRMessage was deleted
+    __block id<OTRThreadOwner> thread = nil;
+    __block id<OTRMessageProtocol> message = nil;
+    [OTRDatabaseManager.shared.readConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+        message = [self parentMessageWithTransaction:transaction];
+        thread = [message threadOwnerWithTransaction:transaction];
+    }];
+    if (!message || !thread) {
+        DDLogError(@"Missing parent message or thread for media message!");
+        return nil;
+    }
+    
+    NSString *buddyUniqueId = [thread threadIdentifier];
+    if (!buddyUniqueId) {
+        return nil;
+    }
+    
+    [[OTRMediaFileManager sharedInstance] deleteDataForItem:self buddyUniqueId:buddyUniqueId completion:^(BOOL success, NSError *error) {
+        if (error) {
+            DDLogError(@"ERROR in deleting data for media item");
+        }
+    } completionQueue:dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0)];
+    
     return nil;
 }
 

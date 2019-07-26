@@ -16,7 +16,7 @@ open class OTRUsernameValidator: NSObject, XLFormValidatorProtocol {
         var isValid = false
         if let value = row.value as? String {
             let (username, domain) = OTRUsernameCell.splitJID(value)
-            if username.characters.count > 0 && domain.characters.count > 0 {
+            if username.count > 0 && domain.count > 0 {
                 isValid = true
             }
         }
@@ -45,7 +45,7 @@ open class OTRUsernameCell: XLFormBaseCell, UITextFieldDelegate {
     
     override open func configure() {
         super.configure()
-        self.selectionStyle = UITableViewCellSelectionStyle.none
+        self.selectionStyle = UITableViewCell.SelectionStyle.none
     }
     
     
@@ -67,10 +67,10 @@ open class OTRUsernameCell: XLFormBaseCell, UITextFieldDelegate {
         
         if let value = self.rowDescriptor!.value as? NSString {
             let (username, domain) = OTRUsernameCell.splitJID(value as String)
-            if username.characters.count > 0 {
+            if username.count > 0 {
                 self.usernameField.typedText = username
             }
-            if domain.characters.count > 0 {
+            if domain.count > 0 {
                 self.usernameField.parkedText = "@" + domain
             }
         }
@@ -78,7 +78,7 @@ open class OTRUsernameCell: XLFormBaseCell, UITextFieldDelegate {
     
     // MARK: XLFormDescriptorCell
     
-    override open static func formDescriptorCellHeight(for rowDescriptor: XLFormRowDescriptor!) -> CGFloat {
+    override open class func formDescriptorCellHeight(for rowDescriptor: XLFormRowDescriptor!) -> CGFloat {
         return 43
     }
     

@@ -8,19 +8,12 @@
 
 import Foundation
 
-@objc public class SecondaryIndexName: NSObject {
-    /// XEP-0359 origin-id
-    @objc public static let originId = "SecondaryIndexNameOriginId"
-    /// XEP-0359 stanza-id
-    @objc public static let stanzaId = "SecondaryIndexNameStanzaId"
-}
 
 @objc public enum DatabaseExtensionName: Int {
     case groupOccupantsViewName
     case buddyDeleteActionViewName
     case relationshipExtensionName
     case actionManagerName
-    case secondaryIndexName
     case buddyFTSExtensionName
     case buddySearchResultsViewName
     case messageQueueBrokerViewName
@@ -31,7 +24,6 @@ import Foundation
             case .buddyDeleteActionViewName: return "BuddyDeleteActionViewName"
             case .relationshipExtensionName: return "OTRYapDatabaseRelationshipName"
             case .actionManagerName: return "OTRYapDatabaseActionManager"
-            case .secondaryIndexName: return "OTRYapDatabseMessageIdSecondaryIndexExtension"
             case .buddyFTSExtensionName: return "OTRBuddyBuddyNameSearchDatabaseViewExtensionName"
             case .buddySearchResultsViewName: return "DatabaseExtensionName.BuddySearchResultsView"
             case .messageQueueBrokerViewName: return "DatabaseExtensionName.MessageQueueBrokerViewName"
@@ -49,6 +41,7 @@ import Foundation
     case messageActionEdgeName
     case buddyActionEdgeName
     case download // for OTRDownloadMessage -> OTRBaseMessage
+    case room
     
     public func name() -> String {
         switch self {
@@ -61,6 +54,7 @@ import Foundation
             case .messageActionEdgeName: return "MessageActionEdgeName"
             case .buddyActionEdgeName: return "BuddyActionEdgeName"
             case .download: return "download"
+            case .room: return "room"
         }
     }
 }
@@ -70,8 +64,8 @@ import Foundation
 }
 
 @objc open class DatabaseNotificationKey:NSObject {
-    @objc open static let ExtensionName = "DatabaseNotificationKey.ExtensionName"
-    @objc open static let ConnectionChanges = "DatabaseNotificationKey.ConnectionChanges"
+    @objc public static let ExtensionName = "DatabaseNotificationKey.ExtensionName"
+    @objc public static let ConnectionChanges = "DatabaseNotificationKey.ConnectionChanges"
 }
 
 @objc public enum BuddyFTSColumnName:Int {

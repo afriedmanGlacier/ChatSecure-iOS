@@ -48,7 +48,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
         if let connection = OTRDatabaseManager.shared.longLivedReadOnlyConnection {
             self.viewHandler = OTRYapViewHandler(databaseConnection: connection, databaseChangeNotificationName: DatabaseNotificationName.LongLivedTransactionChanges)
             self.viewHandler?.delegate = self
-            self.viewHandler?.setup(OTRFilteredBuddiesName, groups:[OTRBuddyGroup])
+            self.viewHandler?.setup(OTRArchiveFilteredBuddiesName, groups:[OTRBuddyGroup])
         }
         didUpdateCollectionView()
         self.tableView.register(OTRBuddyInfoCheckableCell.self, forCellReuseIdentifier: OTRBuddyInfoCheckableCell.reuseIdentifier())
@@ -70,7 +70,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
         let height = collectionView.contentSize.height
         collectionViewHeightConstraint.constant = height
         if let header = tableView.tableHeaderView {
-            let size = header.systemLayoutSizeFitting(UILayoutFittingCompressedSize)
+            let size = header.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
             var frame = header.frame
             frame.size.height = size.height
             header.frame = frame
@@ -82,31 +82,28 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
     }
     
     @IBAction open func didPressDone(_ sender: Any) {
-        if selectedItems.count > 0 {
-            if let delegate = delegate {
-                var buddyIds:[String] = []
-                var generatedGroupName = ""
-                for buddy in selectedItems {
-                    buddyIds.append(buddy.uniqueId)
-                    if generatedGroupName.characters.count > 0 {
-                        generatedGroupName.append(", ")
-                    }
-                    generatedGroupName.append(buddy.displayName)
-                }
-                if generatedGroupName.characters.count > 30 {
-                    generatedGroupName = generatedGroupName.prefix(27).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-                    generatedGroupName.append("...")
-                }
-                delegate.groupBuddiesSelected(self, buddyUniqueIds: buddyIds, groupName: generatedGroupName)
+        guard selectedItems.count > 0, let delegate = self.delegate else { return }
+        var buddyIds:[String] = []
+        var generatedGroupName = ""
+        for buddy in selectedItems {
+            buddyIds.append(buddy.uniqueId)
+            if generatedGroupName.count > 0 {
+                generatedGroupName.append(", ")
             }
-            dismiss(animated: true, completion: nil)
+            generatedGroupName.append(buddy.displayName)
         }
+        if generatedGroupName.count > 30 {
+            generatedGroupName = generatedGroupName.prefix(27).trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+            generatedGroupName.append("...")
+        }
+        delegate.groupBuddiesSelected(self, buddyUniqueIds: buddyIds, groupName: generatedGroupName)
+        dismiss(animated: true, completion: nil)
     }
 
     open func filterOnAccount(accountUniqueId:String?) {
         // Setup filtering to only show default account!
-        OTRDatabaseManager.shared.readWriteDatabaseConnection?.readWrite({ (transaction) in
-            if let fvt = transaction.ext(OTRFilteredBuddiesName) as? YapDatabaseFilteredViewTransaction {
+        OTRDatabaseManager.shared.writeConnection?.readWrite({ (transaction) in
+            if let fvt = transaction.ext(OTRArchiveFilteredBuddiesName) as? YapDatabaseFilteredViewTransaction {
                 let filtering = YapDatabaseViewFiltering.withObjectBlock { (transaction, group, collection, key, object) -> Bool in
                     if let accountId = accountUniqueId, let buddy = object as? OTRXMPPBuddy {
                         let ret = (buddy.accountUniqueId.caseInsensitiveCompare(accountId) == .orderedSame)
@@ -140,7 +137,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
             prototype.bind(buddy: buddy)
             prototype.setNeedsLayout()
             prototype.layoutIfNeeded()
-            let size = prototype.systemLayoutSizeFitting(UILayoutFittingCompressedSize)
+            let size = prototype.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
             return size
         }
         return CGSize.zero
@@ -158,7 +155,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
         if let cell = tableView.dequeueReusableCell(withIdentifier: OTRBuddyInfoCheckableCell.reuseIdentifier(), for: indexPath) as? OTRBuddyInfoCheckableCell,
             let threadOwner = self.viewHandler?.object(indexPath) as? OTRXMPPBuddy {
             var account:OTRAccount? = nil
-            OTRDatabaseManager.shared.readOnlyDatabaseConnection?.read({ (transaction) in
+            OTRDatabaseManager.shared.uiConnection?.read({ (transaction) in
                 if self.shouldShowAccountLabelWithTransaction(transaction: transaction) {
                     account = OTRAccount(forThread: threadOwner, transaction: transaction)
                 }
@@ -191,7 +188,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
         if !self.waitingForExcludedItems, let buddy = self.viewHandler?.object(indexPath) as? OTRXMPPBuddy {
             if !selectedItems.contains(buddy) {
                 selectedItems.append(buddy)
-            } else if let index = selectedItems.index(of: buddy) {
+            } else if let index = selectedItems.firstIndex(of: buddy) {
                 selectedItems.remove(at: index)
             }
             collectionView.reloadData()
@@ -202,7 +199,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
     }
     
     public func didRemoveBuddy(_ buddy: OTRXMPPBuddy) {
-        if let index = selectedItems.index(of: buddy) {
+        if let index = selectedItems.firstIndex(of: buddy) {
             selectedItems.remove(at: index)
             collectionView.reloadData()
             didUpdateCollectionView()
@@ -222,14 +219,13 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
     open func setExistingRoomOccupants(viewHandler:OTRYapViewHandler?, room:OTRXMPPRoom?) {
         self.waitingForExcludedItems = true
         DispatchQueue.global().async {
-            if let room = room, let viewHandler = viewHandler, let mappings = viewHandler.mappings {
+            if let viewHandler = viewHandler, let mappings = viewHandler.mappings {
                 for section in 0..<mappings.numberOfSections() {
                     for row in 0..<mappings.numberOfItems(inSection: section) {
                         var buddy:OTRXMPPBuddy? = nil
-                        if let roomOccupant = viewHandler.object(IndexPath(row: Int(row), section: Int(section))) as? OTRXMPPRoomOccupant,
-                            let jid = roomOccupant.realJID ?? roomOccupant.jid, let account = room.accountUniqueId {
-                            OTRDatabaseManager.shared.readOnlyDatabaseConnection?.read({ (transaction) in
-                                buddy = OTRXMPPBuddy.fetch(withUsername: jid, withAccountUniqueId: account, transaction: transaction)
+                        if let roomOccupant = viewHandler.object(IndexPath(row: Int(row), section: Int(section))) as? OTRXMPPRoomOccupant {
+                            OTRDatabaseManager.shared.readConnection?.read({ (transaction) in
+                                buddy = roomOccupant.buddy(with: transaction)
                             })
                             if let buddy = buddy {
                                 self.existingItems.insert(buddy.uniqueId)
@@ -268,7 +264,7 @@ open class OTRComposeGroupViewController: UIViewController, UICollectionViewDele
         }
     }
     
-    override open func willMove(toParentViewController parent: UIViewController?)
+    override open func willMove(toParent parent: UIViewController?)
     {
         if parent == nil, let delegate = self.delegate {
             delegate.groupSelectionCancelled(self)

@@ -26,16 +26,15 @@
 #import "OTRIncomingMessage.h"
 #import "OTROutgoingMessage.h"
 #import "OTRConstants.h"
-#import "OTROAuthRefresher.h"
-#import "OTROAuthXMPPAccount.h"
 #import "OTRDatabaseManager.h"
 #import "OTRPushTLVHandler.h"
+#import <BBlock/NSObject+BBlock.h>
 @import YapDatabase;
 
 @import KVOController;
 @import OTRAssets;
 #import "OTRLog.h"
-#import <ChatSecureCore/ChatSecureCore-Swift.h>
+#import "ChatSecureCoreCompat-Swift.h"
 #import "OTRXMPPPresenceSubscriptionRequest.h"
 
 @interface OTRProtocolManager ()
@@ -45,7 +44,6 @@
 @end
 
 @implementation OTRProtocolManager
-@synthesize lastInteractionDate = _lastInteractionDate;
 
 -(instancetype)init
 {
@@ -56,25 +54,6 @@
         
         _numberOfConnectedProtocols = 0;
         _numberOfConnectingProtocols = 0;
-        _encryptionManager = [[OTREncryptionManager alloc] init];
-        
-#if DEBUG
-        NSURL *pushAPIEndpoint = [OTRBranding pushStagingAPIURL];
-        if (!pushAPIEndpoint) {
-            // This should only happen within test environment
-            pushAPIEndpoint = [NSURL new];
-        }
-#else
-        NSURL *pushAPIEndpoint = [OTRBranding pushAPIURL];
-#endif
-        
-        // Casting here because it's easier than figuring out the
-        // non-modular include spaghetti mess
-        id<OTRPushTLVHandlerProtocol> tlvHandler = (id<OTRPushTLVHandlerProtocol>)self.encryptionManager.pushTLVHandler;
-        if (pushAPIEndpoint != nil) {
-            _pushController = [[PushController alloc] initWithBaseURL:pushAPIEndpoint sessionConfiguration:[NSURLSessionConfiguration ephemeralSessionConfiguration] databaseConnection:[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection tlvHandler:tlvHandler];
-            self.encryptionManager.pushTLVHandler.delegate = self.pushController;
-        }
     }
     return self;
 }
@@ -96,29 +75,12 @@
     }
 }
 
-- (NSDate*) lastInteractionDate {
-    if ([UIApplication sharedApplication].applicationState == UIApplicationStateActive) {
-        return [NSDate date];
-    }
-    @synchronized (self) {
-        return _lastInteractionDate;
-    }
-}
-
-- (void)setLastInteractionDate:(NSDate *)lastInteractionDate {
-    NSParameterAssert(lastInteractionDate != nil);
-    if (!lastInteractionDate) { return; }
-    @synchronized (self) {
-        _lastInteractionDate = lastInteractionDate;
-    }
-}
-
 - (void)addProtocol:(id<OTRProtocol>)protocol forAccount:(OTRAccount *)account
 {
     @synchronized (self) {
         [self.protocolManagers setObject:protocol forKey:account.uniqueId];
     }
-    [self.KVOController observe:protocol keyPath:NSStringFromSelector(@selector(connectionStatus)) options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld action:@selector(protocolDidChange:)];
+    [self.KVOController observe:protocol keyPath:NSStringFromSelector(@selector(loginStatus)) options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld action:@selector(protocolDidChange:)];
 }
 
 - (BOOL)existsProtocolForAccount:(OTRAccount *)account
@@ -144,16 +106,26 @@
     if (!account.uniqueId) { return nil; }
     id <OTRProtocol> protocol = nil;
     @synchronized (self) {
-         protocol = [self.protocolManagers objectForKey:account.uniqueId];
-    }
-    if(!protocol)
-    {
-        protocol = [[[account protocolClass] alloc] initWithAccount:account];
-        if (protocol && account.uniqueId) {
-            [self addProtocol:protocol forAccount:account];
+        protocol = [self.protocolManagers objectForKey:account.uniqueId];
+        if(!protocol)
+        {
+            protocol = [[[account protocolClass] alloc] initWithAccount:account];
+            if (protocol && account.uniqueId) {
+                [self addProtocol:protocol forAccount:account];
+            }
         }
     }
     return protocol;
+}
+
+- (nullable OTRXMPPManager*)xmppManagerForAccount:(OTRAccount *)account {
+    OTRXMPPManager *xmpp = (OTRXMPPManager*)[self protocolForAccount:account];
+    NSParameterAssert([xmpp isKindOfClass:OTRXMPPManager.class]);
+    if (![xmpp isKindOfClass:OTRXMPPManager.class]) {
+        DDLogError(@"Wrong protocol class for account %@", account);
+        return nil;
+    }
+    return xmpp;
 }
 
 - (void)loginAccount:(OTRAccount *)account userInitiated:(BOOL)userInitiated
@@ -161,26 +133,8 @@
     NSParameterAssert(account);
     if (!account) { return; }
     id <OTRProtocol> protocol = [self protocolForAccount:account];
-    if ([protocol connectionStatus] != OTRLoginStatusDisconnected) {
-        //DDLogWarn(@"Account already connected %@", account);
-    }
-    
-    if([account isKindOfClass:[OTROAuthXMPPAccount class]])
-    {
-        [OTROAuthRefresher refreshAccount:(OTROAuthXMPPAccount *)account completion:^(id token, NSError *error) {
-            if (!error) {
-                ((OTROAuthXMPPAccount *)account).accountSpecificToken = token;
-                [protocol connectUserInitiated:userInitiated];
-            }
-            else {
-                DDLogError(@"Error Refreshing Token");
-            }
-        }];
-    }
-    else
-    {
-        [protocol connectUserInitiated:userInitiated];
-    }
+
+    [protocol connectUserInitiated:userInitiated];
 }
 
 - (void)loginAccount:(OTRAccount *)account
@@ -206,17 +160,47 @@
     }
 }
 
-- (void)disconnectAllAccountsSocketOnly:(BOOL)socketOnly {
+- (void)disconnectAllAccountsSocketOnly:(BOOL)socketOnly timeout:(NSTimeInterval)timeout completionBlock:(nullable void (^)())completionBlock
+{
     @synchronized (self) {
-        [self.protocolManagers enumerateKeysAndObjectsUsingBlock:^(id key, id <OTRProtocol> protocol, BOOL *stop) {
-            [protocol disconnectSocketOnly:socketOnly];
-        }];
+        dispatch_group_t group = dispatch_group_create();
+        NSMutableDictionary<NSString*, NSObject<OTRProtocol>*> *observingManagersForTokens = [NSMutableDictionary new];
+        for (NSObject<OTRProtocol> *manager in self.protocolManagers.allValues) {
+            OTRXMPPManager *xmpp = (OTRXMPPManager*)manager;
+            NSParameterAssert([xmpp isKindOfClass:OTRXMPPManager.class]);
+            if (![xmpp isKindOfClass:OTRXMPPManager.class]) {
+                DDLogError(@"Wrong protocol class for manager %@", manager);
+                continue;
+            }
+            
+            if (xmpp.loginStatus != OTRLoginStatusDisconnected) {
+                dispatch_group_enter(group);
+                NSString *token = [xmpp addObserverForKeyPath:NSStringFromSelector(@selector(loginStatus))
+                                                         options:0
+                                                           block:^(NSString *keyPath, OTRXMPPManager *mgr, NSDictionary *change) {
+                                                               if (mgr.loginStatus == OTRLoginStatusDisconnected) {
+                                                                   dispatch_group_leave(group);
+                                                               }
+                                                           }];
+                observingManagersForTokens[token] = manager;
+                [manager disconnectSocketOnly:socketOnly];
+            }
+        }
+        if (timeout > 0) {
+            dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, (int64_t) (timeout * NSEC_PER_SEC)));
+        }
+        for (NSString *token in observingManagersForTokens.allKeys) {
+            [observingManagersForTokens[token] removeObserverForToken:token];
+        }
+        if (completionBlock != nil) {
+            completionBlock();
+        }
     }
 }
 
 - (void)disconnectAllAccounts
 {
-    [self disconnectAllAccountsSocketOnly:NO];
+    [self disconnectAllAccountsSocketOnly:NO timeout:0 completionBlock:nil];
 }
 
 - (void)protocolDidChange:(NSDictionary *)change
@@ -225,9 +209,15 @@
     __block NSUInteger connecting = 0;
     @synchronized (self) {
         [self.protocolManagers enumerateKeysAndObjectsUsingBlock:^(NSString * _Nonnull key, id<OTRProtocol>  _Nonnull obj, BOOL * _Nonnull stop) {
-            if ([obj connectionStatus] == OTRProtocolConnectionStatusConnected) {
+            OTRXMPPManager *xmpp = (OTRXMPPManager*)obj;
+            NSParameterAssert([xmpp isKindOfClass:OTRXMPPManager.class]);
+            if (![xmpp isKindOfClass:OTRXMPPManager.class]) {
+                DDLogError(@"Wrong protocol class for account %@", obj);
+                return;
+            }
+            if (xmpp.loginStatus == OTRLoginStatusAuthenticated) {
                 connected++;
-            } else if ([obj connectionStatus] == OTRProtocolConnectionStatusConnecting) {
+            } else if (xmpp.loginStatus == OTRLoginStatusConnecting) {
                 connecting++;
             }
         }];
@@ -243,15 +233,21 @@
     @synchronized (self) {
         protocol = [self.protocolManagers objectForKey:account.uniqueId];
     }
-    if (protocol) {
-        connected = [protocol connectionStatus] == OTRProtocolConnectionStatusConnected;
+    OTRXMPPManager *xmpp = (OTRXMPPManager*)protocol;
+    NSParameterAssert([xmpp isKindOfClass:OTRXMPPManager.class]);
+    if (![xmpp isKindOfClass:OTRXMPPManager.class]) {
+        DDLogError(@"Wrong protocol class %@", protocol);
+        return NO;
+    }
+    if (xmpp) {
+        connected = xmpp.loginStatus == OTRLoginStatusAuthenticated;
     }
     return connected;
 }
 
 - (void)sendMessage:(OTROutgoingMessage *)message {
     __block OTRAccount * account = nil;
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [OTRDatabaseManager.shared.readConnection asyncReadWithBlock:^(YapDatabaseReadTransaction *transaction) {
         OTRBuddy *buddy = [OTRBuddy fetchObjectWithUniqueID:message.buddyUniqueId transaction:transaction];
         account = [OTRAccount fetchObjectWithUniqueID:buddy.accountUniqueId transaction:transaction];
     } completionBlock:^{
@@ -271,7 +267,7 @@
     }
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:ADD_BUDDY_STRING() message:message preferredStyle:(UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPhone) ? UIAlertControllerStyleActionSheet : UIAlertControllerStyleAlert];
     NSMutableArray<OTRAccount*> *accounts = [NSMutableArray array];
-    [[OTRDatabaseManager sharedInstance].readOnlyDatabaseConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
+    [OTRDatabaseManager.shared.readConnection readWithBlock:^(YapDatabaseReadTransaction *transaction) {
         NSArray<OTRAccount*> *allAccounts = [OTRAccount allAccountsWithTransaction:transaction];
         [allAccounts enumerateObjectsUsingBlock:^(OTRAccount * _Nonnull obj, NSUInteger idx, BOOL * _Nonnull stop) {
             if (!obj.isArchived) {
@@ -295,30 +291,9 @@
             }
             UIAlertAction *action = [UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
                 OTRXMPPManager *manager = (OTRXMPPManager *)[[OTRProtocolManager sharedInstance] protocolForAccount:account];
-                
-                __block OTRXMPPBuddy *buddy = nil;
-                __block BOOL handled = NO;
-                [[OTRDatabaseManager sharedInstance].readWriteDatabaseConnection readWriteWithBlock:^(YapDatabaseReadWriteTransaction *transaction) {
-                    buddy = [OTRXMPPBuddy fetchBuddyWithUsername:jidString withAccountUniqueId:account.uniqueId transaction:transaction];
-                    if (!buddy) {
-                        buddy = [[OTRXMPPBuddy alloc] init];
-                        buddy.username = jidString;
-                        buddy.accountUniqueId = account.uniqueId;
-                    }
-                    [buddy saveWithTransaction:transaction];
-                    
-                    // Check if we already have a subscription request from this user
-                    OTRXMPPPresenceSubscriptionRequest *presenceRequest = [OTRXMPPPresenceSubscriptionRequest fetchPresenceSubscriptionRequestWithJID:jidString accontUniqueId:account.uniqueId transaction:transaction];
-                    if (presenceRequest != nil) {
-                        // We have an incoming subscription request, just answer that!
-                        [manager.xmppRoster acceptPresenceSubscriptionRequestFrom:jid andAddToRoster:YES];
-                        [presenceRequest removeWithTransaction:transaction];
-                        handled = YES;
-                    }
-                }];
-                if (!handled) {
-                    [manager addBuddy:buddy];
-                }
+
+                OTRXMPPBuddy *buddy = [manager addToRosterWithJID:jid displayName:nil];
+
                 /* TODO OTR fingerprint verificaction
                  if (otrFingerprint) {
                  // We are missing a method to add fingerprint to trust store

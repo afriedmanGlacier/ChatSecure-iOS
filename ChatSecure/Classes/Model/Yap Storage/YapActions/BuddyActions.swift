@@ -38,7 +38,7 @@ open class BuddyAction: OTRYapDatabaseObject, YapActionable {
         case .delete:
             let action = YapActionItem(identifier:"delete", date: nil, retryTimeout: 30, requiresInternet: true, block: { (collection, key, object, metadata) -> Void in
                 
-                guard let connection = OTRDatabaseManager.sharedInstance().readWriteDatabaseConnection else {
+                guard let connection = OTRDatabaseManager.sharedInstance().writeConnection else {
                     return
                 }
                 
@@ -54,13 +54,13 @@ open class BuddyAction: OTRYapDatabaseObject, YapActionable {
                     return
                 }
                 
-                guard let proto = OTRProtocolManager.sharedInstance().protocol(for: acct) else {
+                guard let proto = OTRProtocolManager.sharedInstance().protocol(for: acct) as? XMPPManager else {
                     connection.readWrite({ (transaction) -> Void in
                         transaction.removeObject(forKey: key, inCollection: collection)
                     })
                     return
                 }
-                if proto.connectionStatus == .connected {
+                if proto.loginStatus == .authenticated {
                     proto.removeBuddies([buddy])
                     connection.readWrite({ (transaction) -> Void in
                         transaction.removeObject(forKey: key, inCollection: collection)
@@ -82,18 +82,13 @@ open class BuddyAction: OTRYapDatabaseObject, YapActionable {
         return buddyKey
     }
 
-    override open static var collection: String {
+    override open class var collection: String {
         return OTRYapMessageSendAction.collection
     }
     
     /// The yap key of this item
     public func yapKey() -> String {
         return self.uniqueId
-    }
-    
-    /// The yap collection of this item
-    public func yapCollection() -> String {
-        return type(of: self).collection
     }
     
     /// The queue that this item is in.

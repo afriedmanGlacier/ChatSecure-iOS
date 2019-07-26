@@ -30,7 +30,7 @@
 }
 
 /** Override XMPPStream with XMPPProxyStream */
-- (OTRXMPPStream*) newStream {
+- (XMPPStream*) newStream {
     return [[ProxyXMPPStream alloc] init];
 }
 
@@ -59,7 +59,7 @@
         domainString = jid.domain;
     }
     
-    if (!domainString.length) {
+    if (!domainString.length && error) {
         *error = [NSError errorWithDomain:OTRXMPPErrorDomain code:OTRXMPPErrorCodeDomainError userInfo:@{NSLocalizedDescriptionKey:@"Tor accounts require a valid domain"}];
     }
     

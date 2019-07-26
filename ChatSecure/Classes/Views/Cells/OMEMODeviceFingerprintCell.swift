@@ -17,7 +17,7 @@ private extension String {
     //http://stackoverflow.com/a/34454633/805882
     func splitEvery(_ n: Int) -> [String] {
         var result: [String] = []
-        let chars = Array(characters)
+        let chars = Array(self)
         for index in stride(from: 0, to: chars.count, by: n) {
             result.append(String(chars[index..<min(index+n, chars.count)]))
         }
@@ -25,14 +25,14 @@ private extension String {
     }
 }
 
-public extension NSData {
+extension NSData {
     /// hex, split every 8 bytes by a space
     @objc public func humanReadableFingerprint() -> String {
         return (self as NSData).xmpp_hexStringValue.splitEvery(8).joined(separator: " ")
     }
 }
 
-public extension XLFormBaseCell {
+extension XLFormBaseCell {
     
     @objc public class func defaultRowDescriptorType() -> String {
         let type = NSStringFromClass(self)
@@ -66,7 +66,7 @@ open class OMEMODeviceFingerprintCell: XLFormBaseCell {
     
     open override func update() {
         super.update()
-        if let device = rowDescriptor.value as? OTROMEMODevice {
+        if let device = rowDescriptor.value as? OMEMODevice {
             updateCellFromDevice(device)
         }
         if let fingerprint = rowDescriptor.value as? OTRFingerprint {
@@ -79,7 +79,7 @@ open class OMEMODeviceFingerprintCell: XLFormBaseCell {
     }
     
     @IBAction func switchValueChanged(_ sender: UISwitch) {
-        if let device = rowDescriptor.value as? OTROMEMODevice {
+        if let device = rowDescriptor.value as? OMEMODevice {
             switchValueWithDevice(device)
         }
         if let fingerprint = rowDescriptor.value as? OTRFingerprint {
@@ -87,7 +87,7 @@ open class OMEMODeviceFingerprintCell: XLFormBaseCell {
         }
     }
     
-    fileprivate func updateCellFromDevice(_ device: OTROMEMODevice) {
+    fileprivate func updateCellFromDevice(_ device: OMEMODevice) {
         let trusted = device.isTrusted()
         trustSwitch.isOn = trusted
         
@@ -111,7 +111,7 @@ open class OMEMODeviceFingerprintCell: XLFormBaseCell {
         }
     }
     
-    fileprivate func switchValueWithDevice(_ device: OTROMEMODevice) {
+    fileprivate func switchValueWithDevice(_ device: OMEMODevice) {
         if (trustSwitch.isOn) {
             device.trustLevel = .trustedUser
             if (device.isExpired()){
